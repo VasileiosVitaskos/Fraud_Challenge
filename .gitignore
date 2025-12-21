@@ -1,0 +1,24 @@
+*.o
+*.out
+*.exe
+__pycache__/
+*.pyc
+# 1. Μυστικά (ΠΟΤΕ στο GitHub)
+.env
+
+# 2. Virtual Environment (Είναι τεράστιο και διαφορετικό σε Windows/Linux)
+.venv/
+venv/
+env/
+
+# 3. Σκουπίδια της Python (Compiled files)
+__pycache__/
+*.pyc
+
+# 4. Logs και βάσεις δεδομένων
+*.log
+dump.rdb
+
+# 5. Ρυθμίσεις IDE 
+.vscode/
+.idea/
