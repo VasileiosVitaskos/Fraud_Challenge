@@ -5,6 +5,7 @@ from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 
+# Import the Simulation Engine
 try:
     from fraud_sim import sim
 except ImportError:
@@ -12,158 +13,201 @@ except ImportError:
 
 load_dotenv()
 
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+# --- 1. KEY LOADING SYSTEM ---
+api_keys = [val for key, val in os.environ.items() if key.startswith("GEMINI_KEY_")]
+if not api_keys:
+    single_key = os.getenv("GEMINI_API_KEY")
+    api_keys = [single_key] if single_key else []
 
-# --- MODEL POOL ---
+if not api_keys:
+    raise ValueError("❌ No API keys found! Please check your .env file.")
+
+print(f"🔑 Loaded {len(api_keys)} API Keys for exhaustive rotation.")
+
+# --- 2. MODEL POOL ---
 MODEL_POOL = [
     "gemini-2.5-flash-lite",             
     "gemini-2.0-flash-lite-preview-02-05", 
     "gemini-2.0-flash-lite-001",         
     "gemini-2.5-flash",                  
     "gemini-2.0-flash",                  
-    "gemini-exp-1206",                   
-    "gemini-2.0-flash-exp",              
 ]
 
+# --- 3. STRATEGIC BRAIN ---
 SYSTEM_INSTRUCTION = """
 ROLE: Advanced Red Team Fraud Agent.
-GOAL: Launder $150k from 'fraud_dirty' to 'fraud_clean'.
+GOAL: Launder money efficiently. 
 
-### DYNAMIC DECISION LOGIC (Follow Priority 1-5) ###
+### STRATEGIC PRIORITIES (Strict Order 1-5) ###
 
-1. CRITICAL RISK (High Balance):
-   - Check: Is MAX bot balance > $1,000? 
-   - Action: STOP SMURFING. You must select "mix_chain" (to spread funds) or "cash_out" (to exit).
-   - Reason: You are exceeding safe limits.
-
-2. EVASION (Bans Detected):
-   - Check: Are any bots in 'banned' state?
-   - Action: Select "fake_commerce".
-   - Reason: You need to generate legitimate-looking traffic to confuse the Governor immediately.
-
-3. INTEGRATION (Cash Out):
-   - Check: Do bots have > $500 and are safe?
+1. HARVEST (Aggressive Integration):
+   - Trigger: Is ANY bot balance > $700?
    - Action: Select "cash_out".
+   - Logic: Extract profit immediately. Don't let huge balances accumulate.
 
-4. LAYERING (Confusion):
-   - Check: Do bots have positive balance (but < $500)?
-   - Action: Select "mix_chain". 
-   - Reason: Keep money moving to avoid stagnation.
+2. EVASION (Emergency):
+   - Trigger: Are any bots "banned"?
+   - Action: Select "fake_commerce".
+   - Logic: Generate noise to confuse the classifier.
 
-5. PLACEMENT (Resupply):
-   - Check: Is MAX bot balance < $1,500 AND 'fraud_dirty' > 0?
+3. RESUPPLY (Critical Low Balance):
+   - Trigger: Do fewer than 3 bots have > $50?
    - Action: Select "smurf_split".
+   - Logic: You cannot layer (mix_chain) if the network is empty. You must add funds first.
+
+4. CHURN (Safe Layering):
+   - Trigger: Do 3+ bots have medium funds ($50 - $700)?
+   - Action: Select "mix_chain".
+   - Logic: The network is healthy enough to mix funds. Blur the trail.
+
+5. TOP-UP (Placement):
+   - Trigger: Are bots generally safe (< $500) AND 'fraud_dirty' > 0?
+   - Action: Select "smurf_split".
+   - Logic: Keep the pipeline full.
 
 ### OUTPUT FORMAT (JSON ONLY) ###
 {
-  "current_phase": "Risk Mgmt" | "Evasion" | "Integration" | "Layering" | "Placement",
+  "current_phase": "Harvest" | "Evasion" | "Resupply" | "Churn" | "Top-Up",
   "thought_process": "Short strategic reason.",
-  "selected_tool": "smurf_split" | "mix_chain" | "fake_commerce" | "cash_out"
+  "selected_tool": "cash_out" | "fake_commerce" | "mix_chain" | "smurf_split"
 }
 """
 
-def get_decision_with_fallback(prompt):
+def get_decision_exhaustive(prompt):
     """
-    Tries models in order. Returns (None, None) if ALL fail.
+    Tries EVERY model on Key #1. If all fail, switches to Key #2 and repeats.
     """
-    for model in MODEL_POOL:
-        try:
-            response = client.models.generate_content(
-                model=model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    system_instruction=SYSTEM_INSTRUCTION
+    for key_index, current_key in enumerate(api_keys):
+        temp_client = genai.Client(api_key=current_key)
+        
+        for model in MODEL_POOL:
+            try:
+                response = temp_client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        system_instruction=SYSTEM_INSTRUCTION
+                    )
                 )
-            )
-            return response, model
+                return response, model, key_index + 1
             
-        except Exception as e:
-            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                print(f"⚠️ {model} Exhausted. Switching...")
-                continue
-            else:
-                print(f"❌ Error with {model}: {e}")
-                continue
+            except Exception as e:
+                error_msg = str(e)
+                if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+                    continue 
+                else:
+                    print(f"⚠️ Error {model} (Key {key_index+1}): {e}")
+                    continue
 
-    # If we get here, every single model failed.
-    return None, None
+    return None, None, None
 
 def print_final_report():
     print("\n" + "="*40)
-    print("SIMULATION STOPPED: RESOURCES EXHAUSTED")
+    print("⛔ SIMULATION ENDED")
     print("="*40)
-    
-    # 1. Calculate Clean Money
     clean_total = sim.users[sim.clean_id]['balance']
-    
-    # 2. Calculate Still Dirty Money (Dirty Account + All Bots)
     dirty_acct = sim.users[sim.dirty_id]['balance']
-    
-    # Sum up all bots (Active AND Banned)
     bot_total = sum(d['balance'] for d in sim.users.values() if d['type'] == 'bot')
-    
     total_dirty_left = dirty_acct + bot_total
     
-    print(f"💰 MONEY SUCCESSFULLY CLEANED:  ${clean_total:,.2f}")
-    print(f"☢️  MONEY STILL DIRTY:          ${total_dirty_left:,.2f}")
-    print(f"    (Source: ${dirty_acct:,.2f} + Bots: ${bot_total:,.2f})")
+    print(f"💰 MONEY CLEANED:     ${clean_total:,.2f}")
+    print(f"☢️  STILL DIRTY:       ${total_dirty_left:,.2f}")
     print("="*40)
 
 def play_game():
-    print("--- Starting Strategic Fraud Agent (Fail-Safe Mode) ---")
-    print(f"Model Pool: {len(MODEL_POOL)} models available.")
+    print("--- Starting Strategic Fraud Agent (Dynamic Goal Mode) ---")
+    print(f"Goal: Clean > $75,000 (Half of starting funds)")
+    print(f"Pool: {len(MODEL_POOL)} models x {len(api_keys)} keys.")
     
-    for turn in range(1, 16):
+    # MAX_TURNS set to 100 to give the agent plenty of time
+    MAX_TURNS = 100
+    
+    for turn in range(1, MAX_TURNS + 1):
         print(f"\n--- TURN {turn} ---")
         
         # 1. GET DATA
         bots = [d for d in sim.users.values() if d['type'] == 'bot' and d['state'] == 'active']
-        avg_bot_bal = sum(b['balance'] for b in bots) / len(bots) if bots else 0
+        banned_bots = [d for d in sim.users.values() if d['type'] == 'bot' and d['state'] == 'banned']
         max_bot_bal = max(b['balance'] for b in bots) if bots else 0
+        bots_with_funds = len([b for b in bots if b['balance'] > 50])
 
         prompt = f"""
         DATA SNAPSHOT:
         - Dirty Acct: ${sim.users[sim.dirty_id]['balance']:.2f}
+        - Clean Acct: ${sim.users[sim.clean_id]['balance']:.2f}
         - Active Bots: {len(bots)}
+        - Bots with > $50: {bots_with_funds}
         - Max Bot Balance: ${max_bot_bal:.2f}
         DECISION: Return JSON.
         """
 
-        # 2. CALL WITH FALLBACK
-        response, used_model = get_decision_with_fallback(prompt)
+        # 2. CALL AI
+        response, used_model, used_key = get_decision_exhaustive(prompt)
         
-        # --- STOP CONDITION ---
         if response is None:
-            print("CRITICAL: All models in pool are exhausted.")
+            print("❌ CRITICAL: All API keys and models exhausted.")
             print_final_report()
-            break # Exit the loop immediately
+            break 
 
         try:
             # 3. EXECUTE
             clean_json = response.text.replace('```json', '').replace('```', '')
             decision = json.loads(clean_json)
             
-            print(f"Model Used:   {used_model}")
-            print(f"Action:       {decision.get('selected_tool').upper()}")
+            print(f"Using: Key #{used_key} | {used_model}")
+            print(f"Plan:  {decision.get('current_phase')} -> {decision.get('selected_tool').upper()}")
             
             result = sim.execute_instruction(decision)
-            print(f"Result:       {result}")
+            print(f"Result: {result}")
             
         except Exception as e:
             print(f"Parse Error: {e}")
 
-        # 4. BACKGROUND & CHECKS
+        # 4. BACKGROUND NOISE & CHECKS
         sim.generate_background_noise()
         sim.check_for_bans()
         
-        if sim.users[sim.clean_id]['balance'] > 140000:
-            print("\n>>> MISSION ACCOMPLISHED <<<")
-            print_final_report() # Print stats even on win
+        # --- CALCULATE TOTALS ---
+        cleaned_amount = sim.users[sim.clean_id]['balance']
+        dirty_acct_bal = sim.users[sim.dirty_id]['balance']
+        active_bot_bal = sum(d['balance'] for d in sim.users.values() if d['type'] == 'bot' and d['state'] == 'active')
+        
+        # Total "Playable" Money Remaining (Clean + Dirty + Active Bots)
+        # We don't count banned bots because that money is gone forever.
+        total_remaining_equity = cleaned_amount + dirty_acct_bal + active_bot_bal
+
+        # --- STATUS REPORT (Every 10 Turns) ---
+        if turn % 10 == 0:
+            print(f"\n📊 --- ROUND {turn} STATUS REPORT ---")
+            print(f"   ✅ CLEANED:      ${cleaned_amount:,.2f} / $75,000.00")
+            print(f"   ☢️  DIRTY LEFT:   ${(dirty_acct_bal + active_bot_bal):,.2f}")
+            print(f"   🚫 BANNED LOST:  ${(150000 - total_remaining_equity):,.2f}")
+            print("   -------------------------------\n")
+
+        # --- WIN CONDITION ---
+        if cleaned_amount >= 75000:
+            print(f"\n>>> 🏆 MISSION ACCOMPLISHED <<<")
+            print(f"Target Reached: ${cleaned_amount:,.2f} Cleaned in {turn} turns.")
+            print_final_report()
             break
             
-        print("Short cooling (3s)...") 
-        time.sleep(10) 
+        # --- LOSS CONDITION (Impossible to win) ---
+        # If total money left in the system is less than the goal ($75k), we can never win.
+        if total_remaining_equity < 75000:
+            print(f"\n>>> 💀 MISSION FAILED <<<")
+            print(f"Too much money lost to bans. Max possible clean: ${total_remaining_equity:,.2f}")
+            print_final_report()
+            break
+
+        # --- TIMEOUT CONDITION ---
+        if turn == MAX_TURNS:
+            print(f"\n>>> ⏳ TIME OUT ({MAX_TURNS} Turns Reached) <<<")
+            print_final_report()
+            break
+            
+        print("⏳ Cooling (2s)...") 
+        time.sleep(2) 
 
 if __name__ == "__main__":
     play_game()
