@@ -3,6 +3,7 @@ import random
 import os
 import redis
 import sys
+from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -22,9 +23,9 @@ class FraudEnvironment:
             )
             # Test the connection immediately
             self.redis_client.ping()
-            print(f"✅ [SYSTEM] Connected to Redis at {self.redis_host}:{self.redis_port}")
+            print(f"[SYSTEM] Connected to Redis at {self.redis_host}:{self.redis_port}")
         except redis.ConnectionError:
-            print(f"❌ [SYSTEM] Redis Connection Failed! Logs will only appear in console.")
+            print(f"[SYSTEM] Redis Connection Failed! Logs will only appear in console.")
             self.redis_client = None
 
         self.users = {}
@@ -59,39 +60,36 @@ class FraudEnvironment:
         for _ in range(num_bots):
             self.users[self._generate_id()] = {"type": "bot", "balance": 0.0, "state": "active"}
 
-    # --- ENHANCED LOGGING ---
+    # --- ENHANCED & SANITIZED LOGGING ---
     def log_transaction(self, sender, receiver, amount):
         """
-        Logs to Redis AND prints to Console with context-aware formatting.
+        Safety Critical:
+        - Redis gets a 'Sanitized' log (looks identical for fraud vs civil).
+        - Console gets an 'Enriched' log (so YOU can see what's happening).
         """
-        msg = f"{sender} sent {amount:.2f}$ to {receiver}"
+        # 1. Create the Standard Ledger Format
+        # Matches typical bank logs: [TIMESTAMP] ID sent $X to ID
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        sanitized_msg = f"[{timestamp}] {sender} sent ${amount:.2f} to {receiver}"
         
-        # 1. Determine Type for Visuals
-        sender_type = self.users[sender]['type']
-        
-        if sender_type in ['fraud_dirty', 'fraud_clean', 'bot']:
-            # Highlight Agent moves with RED/Alert icon
-            console_msg = f"🚨 [FRAUD] {msg}"
-        else:
-            # Dimmer/Different icon for Background Noise
-            console_msg = f"🛒 [CIVIL] {msg}"
-
-        # 2. Print to Console
-        print(console_msg)
-        
-        # 3. Save to Redis
+        # 2. Push purely sanitized data to Redis (The Governor's View)
         if self.redis_client:
             try:
-                self.redis_client.lpush("fraud_logs", msg)
+                self.redis_client.lpush("fraud_logs", sanitized_msg)
             except redis.ConnectionError:
                 pass 
 
+        # 3. Print enriched data to Console (Your View)
+        sender_type = self.users[sender]['type']
+        
+        if sender_type in ['fraud_dirty', 'fraud_clean', 'bot']:
+            # You see the Red Siren, but Redis does NOT.
+            print(f"🚨 [FRAUD] {sanitized_msg}")
+        else:
+            print(f"🛒 [CIVIL] {sanitized_msg}")
+
     # --- TOOLS ---
     def smurf_split(self):
-        """
-        Distributes random amounts ($100-$300) to each active bot.
-        This prevents creating a suspicious 'fixed pattern' of transactions.
-        """
         dirty_data = self.users[self.dirty_id]
         if dirty_data['balance'] <= 0: 
             return "Failed: Dirty account is empty."
@@ -103,20 +101,12 @@ class FraudEnvironment:
         total_moved = 0
         transactions_count = 0
         
-        # Loop through every active bot and give them a unique random amount
         for bot_id in active_bots:
-            # 1. Generate random amount between $100 and $300
             amount = round(random.uniform(100.0, 300.0), 2)
+            if dirty_data['balance'] < amount: break
             
-            # 2. Stop if we run out of dirty money
-            if dirty_data['balance'] < amount:
-                break
-            
-            # 3. Execute Transfer
             self.users[self.dirty_id]['balance'] -= amount
             self.users[bot_id]['balance'] += amount
-            
-            # 4. Log individual transaction
             self.log_transaction(self.dirty_id, bot_id, amount)
             
             total_moved += amount
@@ -124,23 +114,14 @@ class FraudEnvironment:
             
         return f"Success: Smurfed ${total_moved:.2f} across {transactions_count} bots."
 
-    # --- DYNAMIC LAYERING TOOL ---
     def mix_chain(self):
-        """
-        Creates a transaction chain with variable length and variable 'leakage' (fees/dust).
-        This mimics irregular payments rather than a robotic 1% commission.
-        """
-        # 1. Dynamic Chain Length (3 to 6 hops)
         chain_len = random.randint(3, 6)
-        
-        # Filter: Bots must have at least $50 to be worth layering
         eligible = [u for u, d in self.users.items() 
                     if d['type'] == 'bot' and d['state'] == 'active' and d['balance'] > 50]
         
         if len(eligible) < chain_len: 
             return "Failed: Not enough eligible bots for chain."
         
-        # 2. Select random chain path
         chain = random.sample(eligible, chain_len)
         hops = 0
         total_moved = 0
@@ -149,25 +130,19 @@ class FraudEnvironment:
             sender, receiver = chain[i], chain[i+1]
             sender_bal = self.users[sender]['balance']
             
-            # 3. Dynamic Transfer Logic
-            # Instead of always moving 99%, we randomize what gets sent.
-            # "Dust" strategy: Leave behind a random small amount ($1 - $15) 
-            # or a random percentage (1% - 4%) to make it look like a fee/expense.
-            
             keep_strategy = random.choice(['fixed_dust', 'percent_fee'])
-            
             if keep_strategy == 'fixed_dust':
                 leave_behind = round(random.uniform(1.50, 12.50), 2)
                 transfer_amt = sender_bal - leave_behind
             else:
-                retention_rate = random.uniform(0.01, 0.04) # 1% to 4%
+                retention_rate = random.uniform(0.01, 0.04) 
                 transfer_amt = round(sender_bal * (1 - retention_rate), 2)
             
-            # Safety Check: Ensure we don't try to send negative money
-            if transfer_amt <= 0:
-                continue
+            # Limit huge transfers to stay under radar (Optional safety cap)
+            transfer_amt = min(transfer_amt, 800.0)
 
-            # Execute
+            if transfer_amt <= 0: continue
+
             self.users[sender]['balance'] -= transfer_amt
             self.users[receiver]['balance'] += transfer_amt
             self.log_transaction(sender, receiver, transfer_amt)
@@ -177,29 +152,17 @@ class FraudEnvironment:
             
         return f"Success: Layered approx ${total_moved:.2f} over {hops} hops."
 
-    # --- DYNAMIC EVASION TOOL ---
     def fake_commerce(self):
-        """
-        Executes a random number of 'purchase' simulations with realistic pricing 
-        (e.g., $19.99 instead of $20.00).
-        """
         bots = [u for u, d in self.users.items() if d['type'] == 'bot' and d['state'] == 'active']
         if len(bots) < 2: return "Failed: Not enough bots."
         
-        # 1. Dynamic Volume: Do 1 to 4 transactions per call
         tx_count = random.randint(1, 4)
         logs = []
         
         for _ in range(tx_count):
             buyer, seller = random.sample(bots, 2)
             
-            # 2. Dynamic Pricing Models
-            # - Coffee/Food: $5 - $25
-            # - Services/Software: $50 - $150
-            # - Retail psychology: Prices ending in .99 or .95
-            
             price_model = random.choice(['micro', 'small', 'medium'])
-            
             if price_model == 'micro':
                 base = random.randint(5, 20)
                 cents = random.choice([.99, .50, .25, .00])
@@ -212,16 +175,13 @@ class FraudEnvironment:
                 
             amount = base + cents
             
-            # Execute only if buyer has funds
             if self.users[buyer]['balance'] >= amount:
                 self.users[buyer]['balance'] -= amount
                 self.users[seller]['balance'] += amount
                 self.log_transaction(buyer, seller, amount)
                 logs.append(f"${amount}")
                 
-        if not logs:
-            return "Failed: Bots too poor for commerce."
-            
+        if not logs: return "Failed: Bots too poor for commerce."
         return f"Success: Simulated {len(logs)} purchases ({', '.join(logs)})."
 
     def cash_out(self):
@@ -235,10 +195,8 @@ class FraudEnvironment:
             total += bal
         return f"Success: Cleaned ${total}."
 
-    # --- NOISE GENERATOR ---
     def generate_background_noise(self):
-        civilians = [uid for uid, d in self.users.items() 
-                     if d['type'] in ['student', 'worker', 'entrepreneur']]
+        civilians = [uid for uid, d in self.users.items() if d['type'] in ['student', 'worker', 'entrepreneur']]
         if len(civilians) < 2: return 0
 
         tx_count = random.randint(10, 25)
@@ -251,12 +209,17 @@ class FraudEnvironment:
                 self.log_transaction(sender, receiver, amt)
         return tx_count
 
-    def check_for_bans(self):
-        for uid, data in self.users.items():
-            if data['type'] == 'bot' and data['state'] == 'active':
-                if data['balance'] > 5000 and random.random() < 0.25:
-                    data['state'] = 'banned'
-                    print(f"🚫 [GOVERNOR] BAN: {uid} blocked.")
+    def ban_user(self, uid):
+        """
+        Locates user in dictionary and sets state to 'banned'.
+        """
+        if uid in self.users:
+            if self.users[uid]['state'] != "banned":
+                self.users[uid]['state'] = "banned"
+                print(f"User {uid} has been successfully banned.")
+        else:
+            # Silently ignore if ID doesn't exist (e.g. from old session)
+            pass
 
     def execute_instruction(self, decision):
         tool = decision.get("selected_tool")

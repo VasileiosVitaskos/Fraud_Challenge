@@ -38,4 +38,4 @@ def reset_simulation_data(client):
     logger.warning("Cleaning old run data")
     keys_to_delete = [ Config.KEY_TRANSACTIONS, Config.KEY_BALANCES, Config.KEY_BANNED, Config.KEY_GAME_STATE, "sim:identity" ]
     client.delete(*keys_to_delete)
-    logget.info("Cleaned ready to run again")
+    logger.info("Cleaned ready to run again")

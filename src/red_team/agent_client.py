@@ -20,9 +20,9 @@ if not api_keys:
     api_keys = [single_key] if single_key else []
 
 if not api_keys:
-    raise ValueError("❌ No API keys found! Please check your .env file.")
+    raise ValueError("No API keys found! Please check your .env file.")
 
-print(f"🔑 Loaded {len(api_keys)} API Keys for exhaustive rotation.")
+print(f"Loaded {len(api_keys)} API Keys for exhaustive rotation.")
 
 # --- 2. MODEL POOL ---
 MODEL_POOL = [
@@ -97,22 +97,22 @@ def get_decision_exhaustive(prompt):
                 if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
                     continue 
                 else:
-                    print(f"⚠️ Error {model} (Key {key_index+1}): {e}")
+                    print(f"Error {model} (Key {key_index+1}): {e}")
                     continue
 
     return None, None, None
 
 def print_final_report():
     print("\n" + "="*40)
-    print("⛔ SIMULATION ENDED")
+    print("SIMULATION ENDED")
     print("="*40)
     clean_total = sim.users[sim.clean_id]['balance']
     dirty_acct = sim.users[sim.dirty_id]['balance']
     bot_total = sum(d['balance'] for d in sim.users.values() if d['type'] == 'bot')
     total_dirty_left = dirty_acct + bot_total
     
-    print(f"💰 MONEY CLEANED:     ${clean_total:,.2f}")
-    print(f"☢️  STILL DIRTY:       ${total_dirty_left:,.2f}")
+    print(f"MONEY CLEANED:     ${clean_total:,.2f}")
+    print(f"STILL DIRTY:       ${total_dirty_left:,.2f}")
     print("="*40)
 
 def play_game():
@@ -146,7 +146,7 @@ def play_game():
         response, used_model, used_key = get_decision_exhaustive(prompt)
         
         if response is None:
-            print("❌ CRITICAL: All API keys and models exhausted.")
+            print("CRITICAL: All API keys and models exhausted.")
             print_final_report()
             break 
 
@@ -179,15 +179,15 @@ def play_game():
 
         # --- STATUS REPORT (Every 10 Turns) ---
         if turn % 10 == 0:
-            print(f"\n📊 --- ROUND {turn} STATUS REPORT ---")
-            print(f"   ✅ CLEANED:      ${cleaned_amount:,.2f} / $75,000.00")
-            print(f"   ☢️  DIRTY LEFT:   ${(dirty_acct_bal + active_bot_bal):,.2f}")
-            print(f"   🚫 BANNED LOST:  ${(150000 - total_remaining_equity):,.2f}")
+            print(f"\n--- ROUND {turn} STATUS REPORT ---")
+            print(f" CLEANED:      ${cleaned_amount:,.2f} / $75,000.00")
+            print(f" DIRTY LEFT:   ${(dirty_acct_bal + active_bot_bal):,.2f}")
+            print(f" BANNED LOST:  ${(150000 - total_remaining_equity):,.2f}")
             print("   -------------------------------\n")
 
         # --- WIN CONDITION ---
         if cleaned_amount >= 75000:
-            print(f"\n>>> 🏆 MISSION ACCOMPLISHED <<<")
+            print(f"\n>>> MISSION ACCOMPLISHED <<<")
             print(f"Target Reached: ${cleaned_amount:,.2f} Cleaned in {turn} turns.")
             print_final_report()
             break
@@ -195,18 +195,18 @@ def play_game():
         # --- LOSS CONDITION (Impossible to win) ---
         # If total money left in the system is less than the goal ($75k), we can never win.
         if total_remaining_equity < 75000:
-            print(f"\n>>> 💀 MISSION FAILED <<<")
+            print(f"\n>>> MISSION FAILED <<<")
             print(f"Too much money lost to bans. Max possible clean: ${total_remaining_equity:,.2f}")
             print_final_report()
             break
 
         # --- TIMEOUT CONDITION ---
         if turn == MAX_TURNS:
-            print(f"\n>>> ⏳ TIME OUT ({MAX_TURNS} Turns Reached) <<<")
+            print(f"\n>>> TIME OUT ({MAX_TURNS} Turns Reached) <<<")
             print_final_report()
             break
             
-        print("⏳ Cooling (2s)...") 
+        print("Sleep (2s)...") 
         time.sleep(2) 
 
 if __name__ == "__main__":
