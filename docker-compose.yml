@@ -1,6 +1,19 @@
 version: '3.8'
 services:
- redis-broker:
-   image: redis:alpine
-   ports:
-     - "6379:6379"
+  redis-broker:       
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+
+  red-team:           
+    build: .
+    container_name: fraud_agent
+    depends_on:
+      - redis-broker
+    env_file:
+      - .env
+    environment:
+      - REDIS_HOST=redis-broker
+      - REDIS_PORT=6379
+    volumes:
+      - .:/app

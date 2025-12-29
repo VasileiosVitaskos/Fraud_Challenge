@@ -23,6 +23,7 @@ if not api_keys:
     raise ValueError("No API keys found! Please check your .env file.")
 
 print(f"Loaded {len(api_keys)} API Keys for exhaustive rotation.")
+print(f"👀 DEBUG: Το πρώτο κλειδί είναι: '{api_keys[0][:10]}...'")
 
 # --- 2. MODEL POOL ---
 MODEL_POOL = [

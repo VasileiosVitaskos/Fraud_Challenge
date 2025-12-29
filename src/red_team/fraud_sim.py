@@ -63,30 +63,35 @@ class FraudEnvironment:
     # --- ENHANCED & SANITIZED LOGGING ---
     def log_transaction(self, sender, receiver, amount):
         """
-        Safety Critical:
-        - Redis gets a 'Sanitized' log (looks identical for fraud vs civil).
-        - Console gets an 'Enriched' log (so YOU can see what's happening).
+        Καταγράφει τη συναλλαγή στο Redis Stream για τον Governor/Frontend
+        και στο Console για εσένα.
         """
-        # 1. Create the Standard Ledger Format
-        # Matches typical bank logs: [TIMESTAMP] ID sent $X to ID
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # 1. Console Output (Για τα μάτια σου μόνο)
+        sender_type = self.users[sender]['type']
         sanitized_msg = f"[{timestamp}] {sender} sent ${amount:.2f} to {receiver}"
         
-        # 2. Push purely sanitized data to Redis (The Governor's View)
-        if self.redis_client:
-            try:
-                self.redis_client.lpush("fraud_logs", sanitized_msg)
-            except redis.ConnectionError:
-                pass 
-
-        # 3. Print enriched data to Console (Your View)
-        sender_type = self.users[sender]['type']
-        
         if sender_type in ['fraud_dirty', 'fraud_clean', 'bot']:
-            # You see the Red Siren, but Redis does NOT.
             print(f"🚨 [FRAUD] {sanitized_msg}")
         else:
             print(f"🛒 [CIVIL] {sanitized_msg}")
+
+        # 2. Redis Stream Push (Για τον Governor)
+        # Στέλνουμε καθαρά δεδομένα, όχι κείμενο!
+        if self.redis_client:
+            try:
+                data = {
+                    "timestamp": timestamp,
+                    "sender_id": str(sender),
+                    "receiver_id": str(receiver),
+                    "amount": float(amount),
+                    "type": "FRAUD" if sender_type in ['fraud_dirty', 'bot'] else "CIVIL"
+                }
+                # Χρησιμοποιούμε xadd για Streams (πιο γρήγορο και σωστό για logs)
+                self.redis_client.xadd("money_flow", data)
+            except redis.ConnectionError:
+                pass
 
     # --- TOOLS ---
     def smurf_split(self):
@@ -228,5 +233,7 @@ class FraudEnvironment:
         if tool == "fake_commerce": return self.fake_commerce()
         if tool == "cash_out": return self.cash_out()
         return "Error: Unknown tool"
+    def check_for_bans(self):
+        pass
 
 sim = FraudEnvironment()
