@@ -1,19 +1,53 @@
 version: '3.8'
+
 services:
-  redis-broker:       
-    image: redis:alpine
+  redis:
+    image: redis:7-alpine
+    container_name: fraud_redis
     ports:
       - "6379:6379"
+    networks:
+      - fraud-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
-  red-team:           
+  red-team:
     build: .
-    container_name: fraud_agent
+    container_name: fraud_red_team
     depends_on:
-      - redis-broker
+      redis:
+        condition: service_healthy
     env_file:
       - .env
     environment:
-      - REDIS_HOST=redis-broker
+      - REDIS_HOST=redis
       - REDIS_PORT=6379
-    volumes:
-      - .:/app
+      - PYTHONUNBUFFERED=1
+    networks:
+      - fraud-net
+    command: python src/red_team/agent_client.py
+    restart: on-failure
+
+  blue-team:
+    build: .
+    container_name: fraud_blue_team
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - PYTHONUNBUFFERED=1
+    networks:
+      - fraud-net
+    command: python src/blue_team/Governor.py
+    restart: on-failure
+
+networks:
+  fraud-net:
+    driver: bridge
