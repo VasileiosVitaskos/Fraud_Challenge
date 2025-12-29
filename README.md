@@ -1,5 +1,4 @@
 # Fraud_Challenge
-# Fraud Detection System - Setup Guide
 
 ## Overview
 This system runs a Red Team fraud simulation alongside a Blue Team (Governor) that detects and bans fraudulent activity using Topological Data Analysis (TDA).
@@ -30,58 +29,9 @@ GEMINI_KEY_2=your_second_api_key_here
 GEMINI_KEY_3=your_third_api_key_here
 ```
 
-### 3. Update docker-compose.yml
-Make sure your `docker-compose.yml` includes both services:
-
-```yaml
-version: '3.8'
-
-services:
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    networks:
-      - fraud-net
-
-  red-team:
-    build: .
-    depends_on:
-      - redis
-    env_file:
-      - .env
-    networks:
-      - fraud-net
-    command: python src/red_team/agent_client.py
-
-  blue-team:
-    build: .
-    depends_on:
-      - redis
-    env_file:
-      - .env
-    networks:
-      - fraud-net
-    command: python src/blue_team/Governor.py
-
-networks:
-  fraud-net:
-    driver: bridge
-```
-
-### 4. Update requirements.txt
-Ensure all dependencies are included:
-```
-redis
-python-dotenv
-google-genai
-numpy
-ripser
-```
-
 ## Running the System
 
-### Option 1: Using Docker Compose (Recommended)
+### Option 1: Using Docker Compose
 ```bash
 # Build the containers
 docker-compose build
@@ -105,12 +55,6 @@ python Governor.py
 # Terminal 3 - Start Agent (Red Team)
 cd src/red_team
 python agent_client.py
-```
-
-### Option 3: Using the Launcher Script
-```bash
-# Make sure Redis is running first
-python run_both.py
 ```
 
 ## How It Works
