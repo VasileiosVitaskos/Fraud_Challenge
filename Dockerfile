@@ -13,5 +13,6 @@ COPY . .
 # Ορίζουμε το Python Path
 ENV PYTHONPATH=/app
 
+ENV PYTHONUNBUFFERED=1
 # ΕΝΤΟΛΗ ΕΚΚΙΝΗΣΗΣ: Τρέχουμε το agent_client.py
 CMD ["python", "src/red_team/agent_client.py"]

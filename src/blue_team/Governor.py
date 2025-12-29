@@ -23,26 +23,23 @@ class Governor:
         self.second_chance = deque()
 
     def transactions_analyzer(self,data: list[dict]):
-		recent_data = []    
-		timestamps = []
-		window_size = 3600
-		for d in data:
+        recent_data = []    
+        timestamps = []
+        window_size = 3600
+        for d in data:
 
-    		timestamp_str = d['timestamp'] 
+            timestamp_str = d['timestamp'] 
+            dt_obj = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
+            epoch = dt_obj.timestamp()
+            timestamps.append(epoch) 
 
-    		dt_obj = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
-
-    		epoch = dt_obj.timestamp()
-
-    		timestamps.append(epoch) 
-    
-		recent_transaction = max(timestamps)
-		for d in data:
-  			timestamp_str = d['timestamp']
-  			current_transaction = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
-  			current_transaction = current_transaction.timestamp()
-  			if  window_size > recent_transaction - current_transaction: 
-    			recent_data.append(d)
+        recent_transaction = max(timestamps)
+        for d in data:
+            timestamp_str = d['timestamp']
+            current_transaction = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
+            current_transaction = current_transaction.timestamp()
+            if  window_size > recent_transaction - current_transaction: 
+                recent_data.append(d)
 
         users_set = set()
         for d in recent_data:
@@ -67,26 +64,21 @@ class Governor:
             dist_matrix[i][j] = min(dist_matrix[i][j], distance)
             dist_matrix[j][i] = min(dist_matrix[j][i], distance) #αυτή την λογική θα ακολουθήσουμε
 
-		result = ripser(dist_matrix, distance_matrix=True, maxdim=1, do_cocycles=True)
-    
-    	h1_features = result['dgms'][1]
-    	cocycles = result['cocycles'][1]
-
-    	suspicious_cases = []
+        result = ripser(dist_matrix, distance_matrix=True, maxdim=1, do_cocycles=True)
+        h1_features = result['dgms'][1]
+        cocycles = result['cocycles'][1]
+        suspicious_cases = []
 		
-		for i, (birth, death) in enumerate(h1_features):
-        persistence = death - birth
-        
-        if persistence > 1.0: 
-            cycle_indices = cocycles[i]
-            # Μετατροπή indices se onomata
-            involved_users = list(set([unique_users[indx] for sublist in cycle_indices for indx in sublist[:2] if indx < N]))
-            
-            suspicious_cases.append({
-                "type": "Layering",
-                "persistence": persistence,
-                "users": involved_users
-            })
-            
-    return suspicious_cases
-
+        for i, (birth, death) in enumerate(h1_features):
+            persistence = death - birth
+        
+        if persistence > 1.0:
+            cycle_indices = cocycles[i]
+            # Μετατροπή indices se onomata
+            involved_users = list(set([unique_users[indx] for sublist in cycle_indices for indx in sublist[:2] if indx < N]))
+            suspicious_cases.append({
+                    "type": "Layering",
+                    "persistence": persistence,
+                    "users": involved_users
+                })
+        return suspicious_cases
