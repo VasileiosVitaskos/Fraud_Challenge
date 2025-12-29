@@ -45,11 +45,11 @@ class Governor:
         for d in recent_data:
             users_set.add(d['sender_id'])
             users_set.add(d['receiver_id'])
-    
+
         unique_users = list(users_set)
         N = len(unique_users)
         user_to_idx = {u: i for i, u in enumerate(unique_users)}
-    
+
         #Apostaseis se pinaka me diagonio 0 
         dist_matrix = np.full((N, N), np.inf)
         np.fill_diagonal(dist_matrix, 0)
@@ -62,23 +62,23 @@ class Governor:
         
             distance = 1.0 / (amount + epsilon)
             dist_matrix[i][j] = min(dist_matrix[i][j], distance)
-            dist_matrix[j][i] = min(dist_matrix[j][i], distance) #αυτή την λογική θα ακολουθήσουμε
+            dist_matrix[j][i] = min(dist_matrix[j][i], distance)
 
         result = ripser(dist_matrix, distance_matrix=True, maxdim=1, do_cocycles=True)
         h1_features = result['dgms'][1]
         cocycles = result['cocycles'][1]
         suspicious_cases = []
-		
+
         for i, (birth, death) in enumerate(h1_features):
+
             persistence = death - birth
-        
-        if persistence > 1.0:
-            cycle_indices = cocycles[i]
-            # Μετατροπή indices se onomata
-            involved_users = list(set([unique_users[indx] for sublist in cycle_indices for indx in sublist[:2] if indx < N]))
-            suspicious_cases.append({
-                    "type": "Layering",
-                    "persistence": persistence,
-                    "users": involved_users
-                })
+            if persistence > 1.0:
+                cycle_indices = cocycles[i]
+                # Μετατροπή indices se onomata
+                involved_users = list(set([unique_users[indx] for sublist in cycle_indices for indx in sublist[:2] if indx < N]))
+                suspicious_cases.append({
+                        "type": "Layering",
+                        "persistence": persistence,
+                        "users": involved_users
+                    })
         return suspicious_cases
