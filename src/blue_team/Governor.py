@@ -115,7 +115,7 @@ class Governor:
         for i, (birth, death) in enumerate(h1_features):
             persistence = death - birth
             
-            if persistence > 0.05:  # Lowered threshold for better detection
+            if persistence > 10.0:  # Lowered threshold for better detection
                 cycle_indices = cocycles[i]
                 involved_users = list(set([unique_users[indx] for sublist in cycle_indices for indx in sublist[:2] if indx < N]))
                 suspicious_cases.append({
@@ -173,8 +173,8 @@ class Governor:
                     if suspicious:
                         print(f"[GOVERNOR] ⚠️ Found {len(suspicious)} suspicious patterns!")
                         for case in suspicious:
-                            print(f"  - Type: {case['type']}, Persistence: {case['persistence']:.4f}")
-                            print(f"    Involved users: {case['users']}")
+                            # print(f"  - Type: {case['type']}, Persistence: {case['persistence']:.4f}")
+                            # print(f"    Involved users: {case['users']}")
                             
                             # Ban all users involved in suspicious pattern
                             for user in case['users']:
