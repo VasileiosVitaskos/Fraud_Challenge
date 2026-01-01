@@ -1,3 +1,7 @@
 redis
 python-dotenv
 google-genai
+numpy
+scipy
+ripser
+cython

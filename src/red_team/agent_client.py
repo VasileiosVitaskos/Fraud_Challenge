@@ -5,6 +5,11 @@ from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 
+try:
+    from src.common.config import Config
+except ImportError:
+    from common.config import Config
+
 # Import the Simulation Engine
 try:
     from fraud_sim import sim
@@ -76,30 +81,47 @@ GOAL: Launder money efficiently.
 
 def get_decision_exhaustive(prompt):
     """
-    Tries EVERY model on Key #1. If all fail, switches to Key #2 and repeats.
+    Tries EVERY model on Key #1. If it fails due to Rate Limit, it WAITS.
+    Only switches keys on fatal errors or repeated failures.
     """
+    # Safety settings (Hardcoded here to ensure they are applied)
+    safety_settings = [
+        types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
+        types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
+        types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
+        types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
+    ]
+
     for key_index, current_key in enumerate(api_keys):
         temp_client = genai.Client(api_key=current_key)
         
         for model in MODEL_POOL:
-            try:
-                response = temp_client.models.generate_content(
-                    model=model,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        system_instruction=SYSTEM_INSTRUCTION
+            # Δοκιμάζουμε έως 3 φορές το ΙΔΙΟ μοντέλο/κλειδί αν τρώμε 429 (Busy)
+            for attempt in range(3):
+                try:
+                    response = temp_client.models.generate_content(
+                        model=model,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            response_mime_type="application/json",
+                            system_instruction=SYSTEM_INSTRUCTION,
+                            safety_settings=safety_settings
+                        )
                     )
-                )
-                return response, model, key_index + 1
-            
-            except Exception as e:
-                error_msg = str(e)
-                if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
-                    continue 
-                else:
-                    print(f"Error {model} (Key {key_index+1}): {e}")
-                    continue
+                    return response, model, key_index + 1
+                
+                except Exception as e:
+                    error_msg = str(e)
+                    # Αν είναι θέμα Rate Limit (429) ή Server Overload (500/503)
+                    if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg or "500" in error_msg:
+                        wait_time = 10 + (attempt * 5) # 10s, 15s, 20s
+                        print(f"⏳ API Busy/Limit ({model} - Key {key_index+1}). Cooling down {wait_time}s...")
+                        time.sleep(wait_time)
+                        continue # Ξαναδοκιμάζουμε (Loop attempt)
+                    
+                    # Αν είναι άλλο error (π.χ. Invalid Key, Bad Request), πάμε επόμενο μοντέλο
+                    print(f"⚠️ Error {model} (Key {key_index+1}): {e}")
+                    break # Break attempt loop, go to next model
 
     return None, None, None
 
@@ -117,21 +139,23 @@ def print_final_report():
     print("="*40)
 
 def play_game():
-    print("--- Starting Strategic Fraud Agent (Dynamic Goal Mode) ---")
-    print(f"Goal: Clean > $75,000 (Half of starting funds)")
-    print(f"Pool: {len(MODEL_POOL)} models x {len(api_keys)} keys.")
-    
-    # MAX_TURNS set to 100 to give the agent plenty of time
-    MAX_TURNS = 100
-    
+    # ---- CONFIG FOR PRINT SPAM ----
+    # Πόσο συχνά να δείχνει "TURN header" + detailed agent logs
+    PRINT_EVERY_N_TURNS = int(os.getenv("AGENT_PRINT_EVERY", "10"))  # 5 ή 10 recommended
+    SHOW_SLEEP_LINE = os.getenv("SHOW_SLEEP_LINE", "0") == "1"       # default off
+
+    MAX_TURNS = Config.TOTAL_TICKS
+
     for turn in range(1, MAX_TURNS + 1):
-        print(f"\n--- TURN {turn} ---")
-        
-        # 1. GET DATA
-        bots = [d for d in sim.users.values() if d['type'] == 'bot' and d['state'] == 'active']
-        banned_bots = [d for d in sim.users.values() if d['type'] == 'bot' and d['state'] == 'banned']
-        max_bot_bal = max(b['balance'] for b in bots) if bots else 0
-        bots_with_funds = len([b for b in bots if b['balance'] > 50])
+
+        # Print a turn header only every N turns (smooth terminal)
+        if turn == 1 or turn % PRINT_EVERY_N_TURNS == 0:
+            print(f"\n--- TURN {turn} ---")
+
+        # 1) GET DATA SNAPSHOT
+        bots = [d for d in sim.users.values() if d["type"] == "bot" and d["state"] == "active"]
+        max_bot_bal = max((b["balance"] for b in bots), default=0.0)
+        bots_with_funds = sum(1 for b in bots if b["balance"] > 50)
 
         prompt = f"""
         DATA SNAPSHOT:
@@ -143,43 +167,57 @@ def play_game():
         DECISION: Return JSON.
         """
 
-        # 2. CALL AI
+        # 2) CALL AI
         response, used_model, used_key = get_decision_exhaustive(prompt)
-        
+
         if response is None:
             print("CRITICAL: All API keys and models exhausted.")
             print_final_report()
-            break 
+            break
 
+        # 3) EXECUTE DECISION
+        decision = None
+        result = None
         try:
-            # 3. EXECUTE
-            clean_json = response.text.replace('```json', '').replace('```', '')
+            clean_json = response.text.replace("```json", "").replace("```", "")
             decision = json.loads(clean_json)
-            
-            print(f"Using: Key #{used_key} | {used_model}")
-            print(f"Plan:  {decision.get('current_phase')} -> {decision.get('selected_tool').upper()}")
-            
+
+            selected_tool = (decision.get("selected_tool") or "").upper()
+            phase = decision.get("current_phase")
+
+            # Print compact agent info only occasionally, or always for important tools
+            IMPORTANT_TOOLS = {"CASH_OUT","FAKE_COMMERCE"}
+            if (turn == 1) or (turn % PRINT_EVERY_N_TURNS == 0) or (selected_tool in IMPORTANT_TOOLS):
+                print(f"Using: Key #{used_key} | {used_model}")
+                print(f"Plan:  {phase} -> {selected_tool}")
+
             result = sim.execute_instruction(decision)
-            print(f"Result: {result}")
-            
+
+            if (turn == 1) or (turn % PRINT_EVERY_N_TURNS == 0) or (selected_tool in IMPORTANT_TOOLS):
+                print(f"Result: {result}")
+
         except Exception as e:
             print(f"Parse Error: {e}")
 
-        # 4. BACKGROUND NOISE & CHECKS
+        # 4) BACKGROUND NOISE & DEFENSE
         sim.generate_background_noise()
         sim.check_for_bans()
-        
+
+        # 5) END-OF-TURN SUMMARY (1 line)
+        sim.end_turn_summary(turn_idx=turn)
+
         # --- CALCULATE TOTALS ---
-        cleaned_amount = sim.users[sim.clean_id]['balance']
-        dirty_acct_bal = sim.users[sim.dirty_id]['balance']
-        active_bot_bal = sum(d['balance'] for d in sim.users.values() if d['type'] == 'bot' and d['state'] == 'active')
-        
-        # Total "Playable" Money Remaining (Clean + Dirty + Active Bots)
-        # We don't count banned bots because that money is gone forever.
+        cleaned_amount = sim.users[sim.clean_id]["balance"]
+        dirty_acct_bal = sim.users[sim.dirty_id]["balance"]
+        active_bot_bal = sum(
+            d["balance"] for d in sim.users.values()
+            if d["type"] == "bot" and d["state"] == "active"
+        )
+
         total_remaining_equity = cleaned_amount + dirty_acct_bal + active_bot_bal
 
-        # --- STATUS REPORT (Every 10 Turns) ---
-        if turn % 10 == 0:
+        # --- STATUS REPORT (Every N Turns) ---
+        if turn % PRINT_EVERY_N_TURNS == 0:
             print(f"\n--- ROUND {turn} STATUS REPORT ---")
             print(f" CLEANED:      ${cleaned_amount:,.2f} / $75,000.00")
             print(f" DIRTY LEFT:   ${(dirty_acct_bal + active_bot_bal):,.2f}")
@@ -188,15 +226,14 @@ def play_game():
 
         # --- WIN CONDITION ---
         if cleaned_amount >= 75000:
-            print(f"\n>>> MISSION ACCOMPLISHED <<<")
+            print("\n>>> MISSION ACCOMPLISHED <<<")
             print(f"Target Reached: ${cleaned_amount:,.2f} Cleaned in {turn} turns.")
             print_final_report()
             break
-            
-        # --- LOSS CONDITION (Impossible to win) ---
-        # If total money left in the system is less than the goal ($75k), we can never win.
+
+        # --- LOSS CONDITION ---
         if total_remaining_equity < 75000:
-            print(f"\n>>> MISSION FAILED <<<")
+            print("\n>>> MISSION FAILED <<<")
             print(f"Too much money lost to bans. Max possible clean: ${total_remaining_equity:,.2f}")
             print_final_report()
             break
@@ -206,9 +243,12 @@ def play_game():
             print(f"\n>>> TIME OUT ({MAX_TURNS} Turns Reached) <<<")
             print_final_report()
             break
-            
-        print("Sleep (2s)...") 
-        time.sleep(2) 
+
+        # --- SLEEP ---
+        if SHOW_SLEEP_LINE:
+            print(f"Sleep ({Config.TICK_DURATION}s)...")
+        time.sleep(Config.TICK_DURATION)
+
 
 if __name__ == "__main__":
     play_game()

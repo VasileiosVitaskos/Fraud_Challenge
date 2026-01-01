@@ -5,12 +5,27 @@ import redis
 import sys
 from datetime import datetime
 from dotenv import load_dotenv
+from collections import deque
+from collections import defaultdict
+
+
+# --- IMPORTS ΒΑΣΙΣΜΕΝΑ ΣΤΟ FILE STRUCTURE ---
+try:
+    # Εισαγωγή του Governor (Pure Logic)
+    from src.blue_team.Governor import Governor
+    # Εισαγωγή του Reporter (Redis Communication)
+    from src.blue_team.send_to_redis import FraudReporter
+except ImportError as e:
+    print(f"⚠️ Import Error: {e}")
+    print("Running in simulation-only mode (No detection).")
+    Governor = None
+    FraudReporter = None
 
 load_dotenv()
 
 class FraudEnvironment:
     def __init__(self, total_normal=50, num_bots=15):
-        # 1. Setup Redis & Verify Connection
+        # 1. Setup Redis
         self.redis_host = os.getenv("REDIS_HOST", "localhost")
         self.redis_port = int(os.getenv("REDIS_PORT", 6379))
         
@@ -21,20 +36,30 @@ class FraudEnvironment:
                 db=0,
                 decode_responses=True
             )
-            # Test the connection immediately
             self.redis_client.ping()
             print(f"[SYSTEM] Connected to Redis at {self.redis_host}:{self.redis_port}")
         except redis.ConnectionError:
             print(f"[SYSTEM] Redis Connection Failed! Logs will only appear in console.")
             self.redis_client = None
 
+        # --- 2. BLUE TEAM INITIALIZATION ---
+        # Αρχικοποιούμε τον Governor και τον Reporter
+        self.governor = Governor() if Governor else None
+        self.reporter = FraudReporter(self.redis_client) if (FraudReporter and self.redis_client) else None
+
         self.users = {}
-        # Starting balances
         self.balances = {
             "student": 3000, "entrepreneur": 10000, "worker": 7000,
             "bot": 0, "fraud_dirty": 150000, "fraud_clean": 0
         }
         self._setup_accounts(total_normal, num_bots)
+        self.last_stream_id = "0-0"
+        self.stream_window = deque(maxlen=20000)
+                # --- LOGGING CONTROL ---
+        self.log_level = os.getenv("LOG_LEVEL", "FRAUD_ONLY").upper()
+        # counters ανά tick/turn (θα τα μηδενίζουμε κάθε turn)
+        self.turn_stats = defaultdict(float)  # counts & totals
+
 
     def _generate_id(self):
         u = str(uuid.uuid4())
@@ -60,25 +85,38 @@ class FraudEnvironment:
         for _ in range(num_bots):
             self.users[self._generate_id()] = {"type": "bot", "balance": 0.0, "state": "active"}
 
-    # --- ENHANCED & SANITIZED LOGGING ---
     def log_transaction(self, sender, receiver, amount):
-        """
-        Καταγράφει τη συναλλαγή στο Redis Stream για τον Governor/Frontend
-        και στο Console για εσένα.
-        """
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        # 1. Console Output (Για τα μάτια σου μόνο)
-        sender_type = self.users[sender]['type']
-        sanitized_msg = f"[{timestamp}] {sender} sent ${amount:.2f} to {receiver}"
-        
-        if sender_type in ['fraud_dirty', 'fraud_clean', 'bot']:
-            print(f"🚨 [FRAUD] {sanitized_msg}")
-        else:
-            print(f"🛒 [CIVIL] {sanitized_msg}")
+        sender_type = self.users[sender]["type"]
 
-        # 2. Redis Stream Push (Για τον Governor)
-        # Στέλνουμε καθαρά δεδομένα, όχι κείμενο!
+        is_fraud = sender_type in ["fraud_dirty", "fraud_clean", "bot"]
+        tx_type = "FRAUD" if is_fraud else "CIVIL"
+
+
+        # --- 1) Collect per-turn stats (για summary) ---
+        if tx_type == "CIVIL":
+            self.turn_stats["civil_tx_count"] += 1
+            self.turn_stats["civil_total_amount"] += float(amount)
+        else:
+            self.turn_stats["fraud_tx_count"] += 1
+            self.turn_stats["fraud_total_amount"] += float(amount)
+
+        # --- 2) Console output based on LOG_LEVEL ---
+        msg = f"[{timestamp}] {sender} sent ${amount:.2f} to {receiver}"
+
+        if self.log_level == "FULL":
+            print(("🚨 [FRAUD] " if is_fraud else "🛒 [CIVIL] ") + msg)
+
+        elif self.log_level == "SUMMARY":
+            # τύπωσε fraud live, civil όχι
+            if is_fraud:
+                print("🚨 [FRAUD] " + msg)
+
+        else:  # FRAUD_ONLY (default)
+            if is_fraud:
+                print("🚨 [FRAUD] " + msg)
+
+        # --- 3) Redis Stream Push (μένει όπως ήταν) ---
         if self.redis_client:
             try:
                 data = {
@@ -86,12 +124,12 @@ class FraudEnvironment:
                     "sender_id": str(sender),
                     "receiver_id": str(receiver),
                     "amount": float(amount),
-                    "type": "FRAUD" if sender_type in ['fraud_dirty', 'bot'] else "CIVIL"
+                    "type": tx_type,
                 }
-                # Χρησιμοποιούμε xadd για Streams (πιο γρήγορο και σωστό για logs)
                 self.redis_client.xadd("money_flow", data)
             except redis.ConnectionError:
                 pass
+
 
     # --- TOOLS ---
     def smurf_split(self):
@@ -113,7 +151,6 @@ class FraudEnvironment:
             self.users[self.dirty_id]['balance'] -= amount
             self.users[bot_id]['balance'] += amount
             self.log_transaction(self.dirty_id, bot_id, amount)
-            
             total_moved += amount
             transactions_count += 1
             
@@ -143,7 +180,6 @@ class FraudEnvironment:
                 retention_rate = random.uniform(0.01, 0.04) 
                 transfer_amt = round(sender_bal * (1 - retention_rate), 2)
             
-            # Limit huge transfers to stay under radar (Optional safety cap)
             transfer_amt = min(transfer_amt, 800.0)
 
             if transfer_amt <= 0: continue
@@ -151,7 +187,6 @@ class FraudEnvironment:
             self.users[sender]['balance'] -= transfer_amt
             self.users[receiver]['balance'] += transfer_amt
             self.log_transaction(sender, receiver, transfer_amt)
-            
             hops += 1
             total_moved += transfer_amt
             
@@ -166,7 +201,6 @@ class FraudEnvironment:
         
         for _ in range(tx_count):
             buyer, seller = random.sample(bots, 2)
-            
             price_model = random.choice(['micro', 'small', 'medium'])
             if price_model == 'micro':
                 base = random.randint(5, 20)
@@ -179,7 +213,6 @@ class FraudEnvironment:
                 cents = random.choice([.00, .99])
                 
             amount = base + cents
-            
             if self.users[buyer]['balance'] >= amount:
                 self.users[buyer]['balance'] -= amount
                 self.users[seller]['balance'] += amount
@@ -213,18 +246,32 @@ class FraudEnvironment:
                 self.users[receiver]['balance'] += amt
                 self.log_transaction(sender, receiver, amt)
         return tx_count
+    def end_turn_summary(self, turn_idx=None):
+        """
+        Τυπώνει summary στο τέλος κάθε turn και μηδενίζει counters.
+        """
+        if self.log_level in ("SUMMARY", "FRAUD_ONLY"):
+            c_n = int(self.turn_stats.get("civil_tx_count", 0))
+            c_sum = self.turn_stats.get("civil_total_amount", 0.0)
+            f_n = int(self.turn_stats.get("fraud_tx_count", 0))
+            f_sum = self.turn_stats.get("fraud_total_amount", 0.0)
+
+            prefix = f"[TURN {turn_idx}] " if turn_idx is not None else ""
+            # 1 γραμμή = smooth terminal
+            print(f"{prefix}CIVIL noise: {c_n} tx, total ${c_sum:,.2f} | FRAUD: {f_n} tx, total ${f_sum:,.2f}")
+
+        self.turn_stats.clear()
+
 
     def ban_user(self, uid):
-        """
-        Locates user in dictionary and sets state to 'banned'.
-        """
         if uid in self.users:
             if self.users[uid]['state'] != "banned":
                 self.users[uid]['state'] = "banned"
-                print(f"User {uid} has been successfully banned.")
-        else:
-            # Silently ignore if ID doesn't exist (e.g. from old session)
-            pass
+                self.users[uid]['balance'] = 0.0 
+                print(f"🚫 [BAN HAMMER] User {uid} detected and BANNED. Assets frozen.")
+                # Ενημερώνουμε και το Redis ότι έγινε ban (προαιρετικό, αλλά χρήσιμο)
+                if self.redis_client:
+                    self.redis_client.sadd("sim:banned", uid)
 
     def execute_instruction(self, decision):
         tool = decision.get("selected_tool")
@@ -233,7 +280,95 @@ class FraudEnvironment:
         if tool == "fake_commerce": return self.fake_commerce()
         if tool == "cash_out": return self.cash_out()
         return "Error: Unknown tool"
+
     def check_for_bans(self):
-        pass
+        """
+        Incremental defense check:
+        - Διαβάζει ΜΟΝΟ νέα Redis stream entries
+        - Κρατά sliding window
+        - Καλεί Governor μόνο σε bounded δεδομένα
+        """
+
+        # --- SAFETY CHECK ---
+        if not self.governor or not self.reporter or not self.redis_client:
+            return
+
+        # --- 1. Incremental read από Redis Stream ---
+        try:
+            response = self.redis_client.xread(
+                {"money_flow": self.last_stream_id},
+                count=5000,   # max νέα events ανά tick
+                block=1       # ~non-blocking
+            )
+        except Exception:
+            return
+
+        # Αν δεν υπάρχουν νέα δεδομένα → δεν κάνουμε τίποτα
+        if not response:
+            return
+
+        # response format: [(stream_name, [(id, fields), ...])]
+        _, entries = response[0]
+
+        for entry_id, fields in entries:
+            self.stream_window.append(fields)
+            self.last_stream_id = entry_id
+
+        # Αν δεν έχουμε αρκετά δεδομένα, δεν τρέχουμε detection
+        if len(self.stream_window) < 50:
+            return
+
+        analysis_data = list(self.stream_window)
+
+        # --- 2. Ανάλυση από Governor ---
+        try:
+            suspicious, big_fish, triangles = self.governor.transactions_analyzer(analysis_data)
+        except Exception as e:
+            print(f"[DEFENSE ERROR] Governor failed: {e}")
+            return
+
+        # --- 3. Αναφορά ---
+        try:
+            self.reporter.publish_report(suspicious, big_fish, triangles)
+        except Exception:
+            pass  # reporting failure ≠ simulation failure
+
+        # --- 4. Συλλογή IDs για Ban ---
+        users_to_ban = set()
+
+        # A. Layering
+        for case in suspicious or []:
+            for uid in case.get("users", []):
+                users_to_ban.add(uid)
+
+        # B. Smurfing / Big Fish (ανεκτικό parsing)
+        for fish_group in big_fish or []:
+            # 1) Αν υπάρχουν cases με u1/u2
+            for incident in fish_group.get("cases", []):
+                if isinstance(incident, dict):
+                    if "u1" in incident:
+                        users_to_ban.add(incident["u1"])
+                    if "u2" in incident:
+                        users_to_ban.add(incident["u2"])
+
+            # 2) Αν υπάρχουν users σαν list
+            for u in fish_group.get("users", []):
+                if isinstance(u, (list, tuple)) and len(u) >= 2:
+                    users_to_ban.add(u[0])
+                    users_to_ban.add(u[1])
+                elif isinstance(u, str):
+                    users_to_ban.add(u)
+
+        # C. Structuring / Triangles
+        for tri in triangles or []:
+            for uid in tri.get("users", []):
+                users_to_ban.add(uid)
+
+        # --- 5. Εκτέλεση Bans ---
+        for uid in users_to_ban:
+            # Δεν μπανάρουμε τα “ταμεία”
+            if uid not in {self.dirty_id, self.clean_id}:
+                self.ban_user(uid)
+
 
 sim = FraudEnvironment()

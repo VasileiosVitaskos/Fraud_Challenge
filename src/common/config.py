@@ -7,8 +7,8 @@ class Config:
    REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
    REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-   TICK_DURATION = 2.0
-   TOTAL_TICKS = 200 # 6 lepta demo 
+   TICK_DURATION = 12.0
+   TOTAL_TICKS = 200 
    KEY_TRANSACTIONS = "sim:transactions" # LIST ME OLES TIS SUNALAGES
    KEY_BALANCES = "sim:balances"# AC_1 --> AMOUNT
    KEY_BANNED = "sim:banned"    # SET WITH BANNS    
