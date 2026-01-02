@@ -118,7 +118,7 @@ class Governor:
                 
                 total_cycle_volume = sum([user_volumes[u] for u in involved_users])
                 
-                if total_cycle_volume < 8000:
+                if total_cycle_volume < 15000:
                     continue
 
                 suspicious_cases.append({
