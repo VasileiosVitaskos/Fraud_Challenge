@@ -223,6 +223,8 @@ class FraudEnvironment:
         return f"Success: Simulated {len(logs)} purchases ({', '.join(logs)})."
 
     def cash_out(self):
+        if self.users[self.clean_id]['state'] == 'banned':
+            return "Failed: Clean account is BANNED. Game Over."
         total = 0
         ready = [u for u, d in self.users.items() if d['type']=='bot' and d['state']=='active' and d['balance']>500]
         for bot in ready:
@@ -366,9 +368,9 @@ class FraudEnvironment:
 
         # --- 5. Εκτέλεση Bans ---
         for uid in users_to_ban:
-            # Δεν μπανάρουμε τα “ταμεία”
-            if uid not in {self.dirty_id, self.clean_id}:
+            if uid not in {self.dirty_id, self.clean_id}: 
                 self.ban_user(uid)
+           
 
 
 sim = FraudEnvironment()

@@ -64,7 +64,7 @@ class Governor:
             distance = 1.0 / (amount + epsilon) # αποφυγή διαίρεσης με το μηδέν
             dist_matrix[i][j] = min(dist_matrix[i][j], distance)  # μη κατευθυνώμενος γράφος
             dist_matrix[j][i] = min(dist_matrix[j][i], distance)  # αυτή την λογική θα ακολουθήσουμε και για i j και j i 
-            if amount > 400:
+            if amount > 700:
                 adjacency_matrix[i][j] = 1 # ΓΙΑ ΝΑ ΦΤΙΑΞΟΥΜΕ ΤΟ ADJACENCY MATRIX ΓΙΑ ΤΑ ΤΡΙΓΩΝΑ
 
         result = ripser(dist_matrix, distance_matrix=True, maxdim=1, do_cocycles=True)  # Υπολογισμός των persistence diagrams και cocycles με ripser η οποία κανει τις εξής μαθηματικές πραξεις χρησιμοποιώντας την τοπολογία  και συγκεκριμένα το filtration των Vietoris-Rips
@@ -79,7 +79,7 @@ class Governor:
         big_fish_net = []
         
         # Ανίχνευση big fish smurfing εδω το όριο είναι 5000 ευρώ => απόσταση 0.0002 γιατι παμε να βρούμε ποσά πάνω από 5000 λογω 1/5000 = 0.0002 
-        pairs_οf_fish = [(i,j,dist) for i, row in enumerate (dist_matrix) for j, dist in enumerate(row[i+1:], start=i+1) if dist < 0.0002] #κάνουμε enumerate για να πάρουμε και τα indices των χρηστών αλλα μονο το πάνω τριγωνο του πίνακα και αποφεύγουμε και το dist !=0 που είναι η διαγώνιος
+        pairs_οf_fish = [(i,j,dist) for i, row in enumerate (dist_matrix) for j, dist in enumerate(row[i+1:], start=i+1) if dist < 0.0033] #κάνουμε enumerate για να πάρουμε και τα indices των χρηστών αλλα μονο το πάνω τριγωνο του πίνακα και αποφεύγουμε και το dist !=0 που είναι η διαγώνιος
         big_fish_suspects = [(unique_users[i], unique_users[j], dist) for i,j,dist in pairs_οf_fish] #μετατροπή των indices σε ονόματα χρηστών κανοντας iterate στην λίστα unique_users
         # Υπολογισμός συχνοτήτων για τους ύποπτους
         transaction_counts = []
@@ -96,15 +96,15 @@ class Governor:
             # Αποθηκεύουμε το αποτέλεσμα (μπορούμε να βάλουμε και το frequency δίπλα στο item)
             transaction_counts.append((u1, u2, item[2], freq))
         # θελουμε το freq > 3 για να θεωρηθεί smurfing
-        transaction_counts = [t for t in transaction_counts if t[3] > 3]
+        transaction_counts = [t for t in transaction_counts if t[3] > 5]
         if transaction_counts:
             big_fish_net.append({"type": "Smurfing","cases": [{"u1": u1, "u2": u2, "freq": freq, "score": dist}for (u1, u2, dist, freq) in transaction_counts]})  #αποθήκευση των αποτελεσμάτων σε λεξικό
 
 
         for i, (birth, death) in enumerate(h1_features):
             persistence = death - birth
-            # Ελέγχουμε για layering κύκλους 500 θεωρουμε το ελάχιστο ποσο που μπορεί να υπάρχει
-            if persistence < 0.002:
+            # Ελέγχουμε για layering κύκλους θεωρουμε το ελάχιστο ποσο που μπορεί να υπάρχει για να θεωρηθεί ύποπτο layering 1/1000 = 0.001
+            if persistence < 0.001:
                 cycle_indices = cocycles[i]
                 # Μετατροπή indices se onomata με τεχνικη sublist που είναι μεθοδος για να παρουμε μικρότερα υποσύνολα της αρχικής λίστας
                 involved_users = list(set([unique_users[indx] for sublist in cycle_indices for indx in sublist[:2] if indx < N]))

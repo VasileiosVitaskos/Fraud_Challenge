@@ -4,7 +4,10 @@ import time
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
-
+try:
+    from src.common.redis_client import get_redis_client, reset_simulation_data
+except ImportError:
+    from common.redis_client import get_redis_client, reset_simulation_data
 try:
     from src.common.config import Config
 except ImportError:
@@ -96,8 +99,8 @@ def get_decision_exhaustive(prompt):
         temp_client = genai.Client(api_key=current_key)
         
         for model in MODEL_POOL:
-            # Δοκιμάζουμε έως 3 φορές το ΙΔΙΟ μοντέλο/κλειδί αν τρώμε 429 (Busy)
-            for attempt in range(3):
+            # Δοκιμάζουμε έως 1 φορές το ΙΔΙΟ μοντέλο/κλειδί αν τρώμε 429 (Busy)
+            for attempt in range(1):
                 try:
                     response = temp_client.models.generate_content(
                         model=model,
@@ -114,7 +117,7 @@ def get_decision_exhaustive(prompt):
                     error_msg = str(e)
                     # Αν είναι θέμα Rate Limit (429) ή Server Overload (500/503)
                     if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg or "500" in error_msg:
-                        wait_time = 10 + (attempt * 5) # 10s, 15s, 20s
+                        wait_time = 10 
                         print(f"⏳ API Busy/Limit ({model} - Key {key_index+1}). Cooling down {wait_time}s...")
                         time.sleep(wait_time)
                         continue # Ξαναδοκιμάζουμε (Loop attempt)
@@ -139,71 +142,101 @@ def print_final_report():
     print("="*40)
 
 def play_game():
-    # ---- CONFIG FOR PRINT SPAM ----
-    # Πόσο συχνά να δείχνει "TURN header" + detailed agent logs
-    PRINT_EVERY_N_TURNS = int(os.getenv("AGENT_PRINT_EVERY", "10"))  # 5 ή 10 recommended
-    SHOW_SLEEP_LINE = os.getenv("SHOW_SLEEP_LINE", "0") == "1"       # default off
+    # -------------------------------------------------------
+    # 1. ΚΑΘΑΡΙΣΜΟΣ ΒΑΣΗΣ (Redis Clear) - Το προσθέσαμε πριν
+    print("🧹 Cleaning up Redis database from previous runs...") 
+    redis_client = get_redis_client()
+    reset_simulation_data(redis_client) 
+    print("✨ Database clean. Starting fresh simulation!")
+    # -------------------------------------------------------
+
+    # ---- CONFIG ----
+    PRINT_EVERY_N_TURNS = int(os.getenv("AGENT_PRINT_EVERY", "10"))
+    SHOW_SLEEP_LINE = os.getenv("SHOW_SLEEP_LINE", "0") == "1"
+    
+    # --- ΝΕΑ ΡΥΘΜΙΣΗ: Κάθε πότε καλούμε το AI (κάθε 4 γύρους) ---
+    AI_UPDATE_INTERVAL = 4 
 
     MAX_TURNS = Config.TOTAL_TICKS
+    
+    # Μνήμη για την τρέχουσα στρατηγική (Cached Decision)
+    current_decision = None
+    last_used_model = "None"
+    last_used_key = "None"
+    current_phase = "Initializing"
 
     for turn in range(1, MAX_TURNS + 1):
 
-        # Print a turn header only every N turns (smooth terminal)
+        # Τυπώνουμε header αν είναι η ώρα ή αν είναι η σειρά του AI
+        is_ai_turn = (turn == 1) or (turn % AI_UPDATE_INTERVAL == 0)
+        
         if turn == 1 or turn % PRINT_EVERY_N_TURNS == 0:
             print(f"\n--- TURN {turn} ---")
 
-        # 1) GET DATA SNAPSHOT
-        bots = [d for d in sim.users.values() if d["type"] == "bot" and d["state"] == "active"]
-        max_bot_bal = max((b["balance"] for b in bots), default=0.0)
-        bots_with_funds = sum(1 for b in bots if b["balance"] > 50)
+        # --- 1) ΕΛΕΓΧΟΣ: ΚΑΛΟΥΜΕ AI Ή ΧΡΗΣΙΜΟΠΟΙΟΥΜΕ ΤΗ ΜΝΗΜΗ; ---
+        # Καλούμε το AI αν είναι η σειρά του Ή αν δεν έχουμε καμία στρατηγική ακόμα
+        should_call_ai = is_ai_turn or (current_decision is None)
 
-        prompt = f"""
-        DATA SNAPSHOT:
-        - Dirty Acct: ${sim.users[sim.dirty_id]['balance']:.2f}
-        - Clean Acct: ${sim.users[sim.clean_id]['balance']:.2f}
-        - Active Bots: {len(bots)}
-        - Bots with > $50: {bots_with_funds}
-        - Max Bot Balance: ${max_bot_bal:.2f}
-        DECISION: Return JSON.
-        """
+        if should_call_ai:
+            # --- ΣΥΛΛΟΓΗ ΔΕΔΟΜΕΝΩΝ (Μόνο όταν ρωτάμε το AI) ---
+            bots = [d for d in sim.users.values() if d["type"] == "bot" and d["state"] == "active"]
+            max_bot_bal = max((b["balance"] for b in bots), default=0.0)
+            bots_with_funds = sum(1 for b in bots if b["balance"] > 50)
 
-        # 2) CALL AI
-        response, used_model, used_key = get_decision_exhaustive(prompt)
+            prompt = f"""
+            DATA SNAPSHOT:
+            - Dirty Acct: ${sim.users[sim.dirty_id]['balance']:.2f}
+            - Clean Acct: ${sim.users[sim.clean_id]['balance']:.2f}
+            - Active Bots: {len(bots)}
+            - Bots with > $50: {bots_with_funds}
+            - Max Bot Balance: ${max_bot_bal:.2f}
+            DECISION: Return JSON.
+            """
 
-        if response is None:
-            print("CRITICAL: All API keys and models exhausted.")
-            print_final_report()
-            break
+            # --- 2) CALL AI ---
+            print(f"📡 [AI WAKE UP] Updating Strategy (Turn {turn})...")
+            response, used_model, used_key = get_decision_exhaustive(prompt)
 
-        # 3) EXECUTE DECISION
-        decision = None
-        result = None
-        try:
-            clean_json = response.text.replace("```json", "").replace("```", "")
-            decision = json.loads(clean_json)
+            if response is None:
+                print("CRITICAL: All API keys exhausted. Keeping old strategy.")
+            else:
+                try:
+                    clean_json = response.text.replace("```json", "").replace("```", "")
+                    current_decision = json.loads(clean_json) # <--- ΑΠΟΘΗΚΕΥΣΗ ΣΤΗ ΜΝΗΜΗ
+                    
+                    # Update metadata logs
+                    last_used_model = used_model
+                    last_used_key = used_key
+                    current_phase = current_decision.get("current_phase", "Unknown")
+                    selected_tool = (current_decision.get("selected_tool") or "").upper()
+                    
+                    print(f"🤖 NEW ORDERS: {current_phase} -> {selected_tool}")
 
-            selected_tool = (decision.get("selected_tool") or "").upper()
-            phase = decision.get("current_phase")
+                except Exception as e:
+                    print(f"⚠️ JSON Parse Error: {e}. Keeping old strategy.")
+        else:
+            # --- FAST MODE ---
+            # Δεν καλούμε το AI, κρατάμε την παλιά εντολή
+            pass 
 
-            # Print compact agent info only occasionally, or always for important tools
-            IMPORTANT_TOOLS = {"CASH_OUT","FAKE_COMMERCE"}
-            if (turn == 1) or (turn % PRINT_EVERY_N_TURNS == 0) or (selected_tool in IMPORTANT_TOOLS):
-                print(f"Using: Key #{used_key} | {used_model}")
-                print(f"Plan:  {phase} -> {selected_tool}")
-
-            result = sim.execute_instruction(decision)
-
-            if (turn == 1) or (turn % PRINT_EVERY_N_TURNS == 0) or (selected_tool in IMPORTANT_TOOLS):
+        # --- 3) EXECUTE DECISION (Τρέχει ΚΑΘΕ γύρο με την cached εντολή) ---
+        if current_decision:
+            # Αν είναι fast turn, δείξε απλά μια μικρή ένδειξη (προαιρετικά)
+            # if not should_call_ai: print(f"⚡ Fast-Exec: {current_decision.get('selected_tool')}")
+            
+            result = sim.execute_instruction(current_decision)
+            
+            # Τυπώνουμε το result αν είναι AI turn ή αν είναι η ώρα του print
+            if should_call_ai or (turn % PRINT_EVERY_N_TURNS == 0):
                 print(f"Result: {result}")
+        else:
+            print("⚠️ No strategy available yet.")
 
-        except Exception as e:
-            print(f"Parse Error: {e}")
-
-        # 4) BACKGROUND NOISE & DEFENSE
+        # --- 4) BACKGROUND NOISE & DEFENSE ---
         sim.generate_background_noise()
         sim.check_for_bans()
 
-        # 5) END-OF-TURN SUMMARY (1 line)
+        # --- 5) END-OF-TURN SUMMARY ---
         sim.end_turn_summary(turn_idx=turn)
 
         # --- CALCULATE TOTALS ---
@@ -213,38 +246,36 @@ def play_game():
             d["balance"] for d in sim.users.values()
             if d["type"] == "bot" and d["state"] == "active"
         )
-
         total_remaining_equity = cleaned_amount + dirty_acct_bal + active_bot_bal
 
-        # --- STATUS REPORT (Every N Turns) ---
+        # --- STATUS REPORT ---
         if turn % PRINT_EVERY_N_TURNS == 0:
             print(f"\n--- ROUND {turn} STATUS REPORT ---")
             print(f" CLEANED:      ${cleaned_amount:,.2f} / $75,000.00")
             print(f" DIRTY LEFT:   ${(dirty_acct_bal + active_bot_bal):,.2f}")
-            print(f" BANNED LOST:  ${(150000 - total_remaining_equity):,.2f}")
+            print(f" STRATEGY:     {current_decision.get('selected_tool') if current_decision else 'None'}")
             print("   -------------------------------\n")
 
-        # --- WIN CONDITION ---
+        # --- WIN/LOSS CONDITIONS ---
         if cleaned_amount >= 75000:
             print("\n>>> MISSION ACCOMPLISHED <<<")
             print(f"Target Reached: ${cleaned_amount:,.2f} Cleaned in {turn} turns.")
             print_final_report()
             break
 
-        # --- LOSS CONDITION ---
         if total_remaining_equity < 75000:
-            print("\n>>> MISSION FAILED <<<")
+            print("\n>>> MISSION FAILED (Bankrupt) <<<")
             print(f"Too much money lost to bans. Max possible clean: ${total_remaining_equity:,.2f}")
             print_final_report()
             break
 
-        # --- TIMEOUT CONDITION ---
         if turn == MAX_TURNS:
-            print(f"\n>>> TIME OUT ({MAX_TURNS} Turns Reached) <<<")
+            print(f"\n>>> TIME OUT ({MAX_TURNS} Turns) <<<")
             print_final_report()
             break
 
         # --- SLEEP ---
+        # Τώρα που έχουμε fast turns, το sleep είναι σημαντικό για να βλέπεις τι γίνεται
         if SHOW_SLEEP_LINE:
             print(f"Sleep ({Config.TICK_DURATION}s)...")
         time.sleep(Config.TICK_DURATION)

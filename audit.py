@@ -7,7 +7,7 @@ load_dotenv()
 
 def audit_bans():
     # Σύνδεση στο Redis (Localhost)
-    host = "localhost"
+    host = "redis-broker"
     port = int(os.getenv("REDIS_PORT", 6379))
     
     try:
