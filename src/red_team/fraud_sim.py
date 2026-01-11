@@ -38,6 +38,7 @@ class FraudEnvironment:
         self.users = {}
         self.balances = {"student": 3000, "entrepreneur": 10000, "worker": 7000, "bot": 0, "fraud_dirty": 150000, "fraud_clean": 0}
         self.frozen_assets = 0.0
+        self.frozen_from_bots = 0.0  # NEW: Track only bot frozen assets for win condition
         
         # Stats tracker
         self.stats = defaultdict(float)
@@ -396,10 +397,14 @@ class FraudEnvironment:
             self.users[uid]['state'] = "banned"
             self.users[uid]['balance'] = 0.0
             
-            # Track False Positives
+            # Track False Positives vs Bot Bans
             if self.users[uid]['type'] in ['student', 'worker', 'entrepreneur']:
                 self.false_positives += 1
                 print(f"⚠️ [FP #{self.false_positives}] BANNED {self.users[uid]['type']} {uid[:4]}.. Frozen: ${frozen:,.2f}")
+            elif self.users[uid]['type'] == 'bot':
+                # Track bot-specific frozen for win condition
+                self.frozen_from_bots += frozen
+                print(f"🚫 [GOVERNOR] BANNED {uid[:4]}.. Frozen: ${frozen:,.2f}")
             else:
                 print(f"🚫 [GOVERNOR] BANNED {uid[:4]}.. Frozen: ${frozen:,.2f}")
             

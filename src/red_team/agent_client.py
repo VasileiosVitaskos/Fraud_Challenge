@@ -378,29 +378,28 @@ DECIDE YOUR NEXT MOVE:
         if decision:
             tool = decision.get("selected_tool")
             
-            # Track smurfed bots for layering requirement
+            # Track smurfed bots for layering requirement (BEFORE execution)
             if tool == "smurf_split":
                 # After smurfing, mark these bots as needing layering
                 smurfed_bots = [u for u, d in sim.users.items() 
                                if d['type'] == 'bot' and d['state'] == 'active' and d['balance'] > 0]
                 bots_need_layering.update(smurfed_bots)
             
-            elif tool == "mix_chain":
-                # After layering, mark bots as cleaned
-                # (Remove from needs-layering set after sufficient mixing)
-                if (sim.total_smurfed - sim.total_layered) <= 5000:  # All smurfed funds layered
-                    bots_need_layering.clear()
-                    
+            # EXECUTE THE ACTION FIRST
             res_msg = sim.execute_instruction(decision)
-
-            if tool == "cash_out":
+            
+            # THEN check results (AFTER execution)
+            if tool == "mix_chain":
+                # Check if layering is complete (uses UPDATED values)
+                if (sim.total_smurfed - sim.total_layered) <= 5000:
+                    bots_need_layering.clear()
+            
+            elif tool == "cash_out":
                 # After cash out, remove from layering requirement
                 cashed_bots = [u for u, d in sim.users.items() 
                               if d['type'] == 'bot' and d['state'] == 'active' and d['balance'] < 100]
                 for bot in cashed_bots:
                     bots_need_layering.discard(bot)
-            
-            
 
         # Output
         if turn % PRINT_EVERY_N_TURNS == 0:
@@ -415,17 +414,23 @@ DECIDE YOUR NEXT MOVE:
             
             cln = sim.users[sim.clean_id]['balance']
             frz = sim.frozen_assets
+            frz_bots = sim.frozen_from_bots
             left = START_EQ - cln - frz
             dirty_left = sim.users[sim.dirty_id]['balance']
             
-            print(f"📊 SCORE:       🔴 Clean: ${cln:,.0f}  |  🔵 Frozen: ${frz:,.0f}  |  ⚫ Left: ${left:,.0f}")
+            # Show both total frozen (incl FPs) and bot-only frozen
+            if sim.false_positives > 0:
+                print(f"📊 SCORE:       🔴 Clean: ${cln:,.0f}  |  🔵 Frozen: ${frz:,.0f} (${frz_bots:,.0f} from bots)  |  ⚫ Left: ${left:,.0f}")
+            else:
+                print(f"📊 SCORE:       🔴 Clean: ${cln:,.0f}  |  🔵 Frozen: ${frz:,.0f}  |  ⚫ Left: ${left:,.0f}")
             print(f"💼 STATUS:      Dirty: ${dirty_left:,.0f}  |  Bots Needing Layering: {len(bots_need_layering)}")
             print(f"🧠 Brain:       {last_model}")
 
         # ========== ENHANCED WIN CONDITIONS ==========
         
         cln = sim.users[sim.clean_id]['balance']
-        frz = sim.frozen_assets
+        frz = sim.frozen_assets  # Total frozen (including FPs)
+        frz_bots = sim.frozen_from_bots  # NEW: Only bot assets (for win condition)
         left = START_EQ - cln - frz
         
         # NEW: Blue Team Perfect Win (90% of bots eliminated)
@@ -455,10 +460,11 @@ DECIDE YOUR NEXT MOVE:
             print_final_report(START_EQ)
             break
         
-        # ORIGINAL: Blue Team Wins (Frozen $75k)
-        if frz >= 75000:
+        # FIXED: Blue Team Wins (Frozen $75k from BOTS only!)
+        if frz_bots >= 75000:
             print("\n👮 BLUE TEAM WINS!")
-            print(f"Successfully froze ${frz:,.0f} in fraud assets")
+            print(f"Successfully froze ${frz_bots:,.0f} in fraud assets (from bots)")
+            print(f"Total frozen (including {sim.false_positives} FPs): ${frz:,.0f}")
             print_final_report(START_EQ)
             break
         
