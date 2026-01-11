@@ -1,3 +1,4 @@
+
 import numpy as np
 import redis
 from ripser import ripser
@@ -9,19 +10,21 @@ from collections import Counter
 
 load_dotenv()
 
+try:
+    from src.common.config import Config
+except ImportError:
+    import config as Config
+
 class Governor:
     def __init__(self):
-      
         self.memory = deque() 
-        self.window_size = 3600 
+        self.window_size = (Config.TOTAL_TICKS * Config.TICK_DURATION)
 
     def transactions_analyzer(self, new_data: list[dict]):
-        
         for d in new_data:
             try:
                 dt_obj = datetime.strptime(d['timestamp'], "%Y-%m-%d %H:%M:%S")
                 epoch = dt_obj.timestamp()
-               
                 entry = d.copy()
                 entry['epoch'] = epoch
                 self.memory.append(entry)
@@ -31,9 +34,7 @@ class Governor:
         if not self.memory:
             return [], [], []
 
-      
         current_sim_time = self.memory[-1]['epoch']
-    
         while self.memory and (current_sim_time - self.memory[0]['epoch'] > self.window_size):
             self.memory.popleft()
 
@@ -42,7 +43,6 @@ class Governor:
         if len(recent_data) < 5:
             return [], [], []
 
-   
         user_volumes = Counter()
         users_set = set()
         
@@ -79,10 +79,15 @@ class Governor:
             dist_matrix[i][j] = min(dist_matrix[i][j], distance)
             dist_matrix[j][i] = min(dist_matrix[j][i], distance)
             
+            pair_key = tuple(sorted((d['sender_id'], d['receiver_id'])))
+            frequency = counts[pair_key]
             if amount > 2000:
                 adjacency_matrix[i][j] = 1
+            elif amount > 300 and frequency >= 3:
+                adjacency_matrix[i][j] = 1
+            elif amount > 100 and frequency >= 6:
+                adjacency_matrix[i][j] = 1
 
-     
         result = ripser(dist_matrix, distance_matrix=True, maxdim=1, do_cocycles=True)
         h1_features = result['dgms'][1]
         cocycles = result['cocycles'][1]
@@ -91,35 +96,62 @@ class Governor:
         big_fish_net = []
         triangle_cases = []
 
-        pairs_of_fish = [(i,j,dist) for i, row in enumerate (dist_matrix) for j, dist in enumerate(row[i+1:], start=i+1) if dist < 0.01]
-        big_fish_suspects = [(unique_users[i], unique_users[j], dist) for i,j,dist in pairs_of_fish]
-        
-        bf_transaction_counts = []
-        for item in big_fish_suspects:
-            u1, u2 = item[0], item[1]
-            key = tuple(sorted((u1, u2)))
-            freq = counts[key]
-            bf_transaction_counts.append((u1, u2, item[2], freq))
-        
-        bf_transaction_counts = [t for t in bf_transaction_counts if t[3] > 6]
-        
-        if bf_transaction_counts:
+        user_outgoing = Counter()
+        user_outgoing_volume = Counter()
+
+        for d in recent_data:
+            if float(d['amount']) > 100:
+                user_outgoing[d['sender_id']] += 1
+                user_outgoing_volume[d['sender_id']] += float(d['amount'])
+
+        smurfing_suspects = []
+        for user, tx_count in user_outgoing.items():
+            if tx_count > 12:
+                total_sent = user_outgoing_volume[user]
+                recipients = set([d['receiver_id'] for d in recent_data 
+                        if d['sender_id'] == user and float(d['amount']) > 100])
+                
+                if len(recipients) > 7:
+                    avg_per_recipient = total_sent / len(recipients) if len(recipients) > 0 else 0
+                    if avg_per_recipient > 3000:
+                        for recipient in recipients:
+                            smurfing_suspects.append({
+                            "user": recipient,
+                            "hub": user,
+                            "tx_count": tx_count,
+                            "recipient_count": len(recipients),
+                            "total_volume": total_sent
+                        })
+
+        if smurfing_suspects:
             big_fish_net.append({
                 "type": "Smurfing",
-                "cases": [{"u1": u1, "u2": u2, "freq": freq, "score": dist} for (u1, u2, dist, freq) in bf_transaction_counts]
+                "cases": smurfing_suspects
             })
-
       
         for i, (birth, death) in enumerate(h1_features):
             persistence = death - birth
             if persistence < 0.005:
                 cycle_indices = cocycles[i]
                 involved_users = list(set([unique_users[indx] for sublist in cycle_indices for indx in sublist[:2] if indx < N]))
-                
                 total_cycle_volume = sum([user_volumes[u] for u in involved_users])
-                
-                if total_cycle_volume < 15000:
+                min_volume = len(involved_users) * 3000
+
+                if total_cycle_volume < min_volume:
                     continue
+                     
+                cycle_txs = [d for d in recent_data 
+                     if d['sender_id'] in involved_users 
+                     and d['receiver_id'] in involved_users]
+        
+                if cycle_txs:
+                    amounts = [float(d['amount']) for d in cycle_txs]
+                    avg_amount = sum(amounts) / len(amounts)
+                    std_dev = (sum((x - avg_amount)**2 for x in amounts) / len(amounts)) ** 0.5
+                    cv = std_dev / avg_amount if avg_amount > 0 else 0
+            
+                    if cv > 0.5:
+                        continue
 
                 suspicious_cases.append({
                     "type": "Layering",
@@ -128,7 +160,6 @@ class Governor:
                     "volume": total_cycle_volume
                 })
 
-       
         adjacency_square = np.dot(adjacency_matrix, adjacency_matrix)
         adjacency_cube = np.dot(adjacency_square, adjacency_matrix)
         seen_triangles = set()
