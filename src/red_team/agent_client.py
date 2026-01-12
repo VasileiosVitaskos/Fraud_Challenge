@@ -324,6 +324,8 @@ def play_game():
         
         # Calculate bots that need layering
         bots_need_cleaning = len(bots_need_layering)
+
+        total_cleanable = sum(sim.bot_received_mix.values())
         
         prompt = f"""
 TURN {turn}/{MAX_TURNS} - STRATEGIC STATUS:
@@ -336,8 +338,8 @@ TURN {turn}/{MAX_TURNS} - STRATEGIC STATUS:
 🧼 LAYERING PROGRESS:
 - Total Smurfed: ${sim.total_smurfed:,.0f}
 - Total Layered: ${sim.total_layered:,.0f}
+- Ready for CashOut: ${total_cleanable:,.0f} (Funds returned from Rings)  
 - Unlayered: ${sim.total_smurfed - sim.total_layered:,.0f} ({((sim.total_smurfed - sim.total_layered) / sim.total_smurfed * 100) if sim.total_smurfed > 0 else 0:.0f}%)
-- Layering Complete: {'YES ✅' if (sim.total_smurfed - sim.total_layered) < 5000 else 'NO ❌ - Keep layering!'}
 
 🤖 BOT NETWORK:
 - Active Bots: {len(bots)}/15
@@ -389,13 +391,19 @@ DECIDE YOUR NEXT MOVE:
             res_msg = sim.execute_instruction(decision)
             
             # THEN check results (AFTER execution)
+            # THEN check results (AFTER execution)
             if tool == "mix_chain":
-                # Check if layering is complete (uses UPDATED values)
-                if (sim.total_smurfed - sim.total_layered) <= 5000:
-                    bots_need_layering.clear()
+                # Check which bots are now fully layered (Clean Candidates)
+                # NEW DERBY LOGIC: Bot is ready if it received 'mix' funds back
+                for bot_id in list(bots_need_layering):
+                    # Ελέγχουμε αν έχει επιστρέψει καθαρό χρήμα (πάνω από $1000 για να αξίζει)
+                    clean_available = sim.bot_received_mix.get(bot_id, 0.0)
+                    
+                    if clean_available > 1000: 
+                        bots_need_layering.discard(bot_id)
             
             elif tool == "cash_out":
-                # After cash out, remove from layering requirement
+                # After cash out, remove cashed bots from layering requirement
                 cashed_bots = [u for u, d in sim.users.items() 
                               if d['type'] == 'bot' and d['state'] == 'active' and d['balance'] < 100]
                 for bot in cashed_bots:

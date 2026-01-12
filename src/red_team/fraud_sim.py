@@ -51,6 +51,11 @@ class FraudEnvironment:
         self.total_smurfed = 0.0   # Total amount sent via smurf_split
         self.total_layered = 0.0   # Total amount sent through mix_chain
         
+        # PER-BOT TRACKING: Track how much each bot received vs sent
+        self.bot_received = defaultdict(float)  # Amount each bot received from smurf
+        self.bot_sent = defaultdict(float)      # Amount each bot sent during layering
+        self.bot_sent_mix = defaultdict(float)       # Λεφτά που έστειλε το bot σε Rings
+        self.bot_received_mix = defaultdict(float)   # Λεφτά που έλαβε πίσω από Rings (Clean Limit)
         self._setup_accounts(total_normal, num_bots)
         self.last_stream_id = "0-0"
         self.stream_window = deque(maxlen=20000)
@@ -215,6 +220,10 @@ class FraudEnvironment:
             self.users[self.dirty_id]['balance'] -= amt
             self.users[bot]['balance'] += amt
             self.log_transaction(self.dirty_id, bot, amt, "SMURF")
+            
+            # TRACK per-bot received amount
+            self.bot_received[bot] += amt
+            
             total += amt
             recipients_count += 1
         
@@ -227,7 +236,7 @@ class FraudEnvironment:
         else:
             return "Failed: Insufficient funds for smurfing."
 
-    def mix_chain(self):
+    # def mix_chain(self):
         """
         Gradual layering with realistic small amounts
         
@@ -274,6 +283,10 @@ class FraudEnvironment:
             self.users[s]['balance'] -= amt
             self.users[r]['balance'] += amt
             self.log_transaction(s, r, amt, "LAYER")
+            
+            # TRACK per-bot sent amount (for layering completion check)
+            self.bot_sent[s] += amt
+            
             total += amt
             total_txs += 1
         
@@ -281,7 +294,60 @@ class FraudEnvironment:
         self.total_layered += total
         
         return f"Layered ${total:,.2f} ({total_txs} txs, gradual)"
+    def mix_chain(self):
+        """
+        Derby Strategy Layering (Ring Topology)
+        - Creates closed loops: B1->B2->B3->B4->B1
+        - Risk Logic: Length 4-5 (Safe) vs 6-8 (Risky if Volume > $4k)
+        - Updates 'bot_received_mix' for cash_out eligibility
+        """
+        bots = [u for u, d in self.users.items() 
+                if d['type'] == 'bot' and d['state'] == 'active' and d['balance'] > 500]
+        
+        if len(bots) < 4: 
+            return "Failed: Need 4+ bots to form a ring."
+        
+        # 1. Roulette: Length determines Visibility
+        chain_len = random.randint(4, 8)
+        actual_len = min(len(bots), chain_len)
+        cycle_bots = random.sample(bots, actual_len)
+        
+        total = 0
+        tx_count = 0
+        
+        # 2. Execution of the Ring
+        for i in range(len(cycle_bots)):
+            sender = cycle_bots[i]
+            receiver = cycle_bots[(i + 1) % len(cycle_bots)] # Loop back to start
+            
+            bal = self.users[sender]['balance']
+            
+            # 3. Roulette: Amount determines Detectability
+            # Sends 40-70% of balance. 
+            # If Balance > $10k -> Amount > $4k -> BUSTED in Visible Rings
+            percent = random.uniform(0.40, 0.70)
+            amt = round(bal * percent, 2)
+            
+            if amt < 100: continue
 
+            self.users[sender]['balance'] -= amt
+            self.users[receiver]['balance'] += amt
+            
+            # --- CRITICAL TRACKING ---
+            self.bot_sent_mix[sender] += amt
+            self.bot_received_mix[receiver] += amt # Increases Cash Out limit
+            # -------------------------
+
+            self.log_transaction(sender, receiver, amt, "LAYER")
+            
+            total += amt
+            tx_count += 1
+            
+        self.total_layered += total
+        
+        status = "GHOST" if actual_len < 6 else "VISIBLE"
+        return f"Ring ({status}): ${total:,.2f} via {tx_count} bots (Avg: ${total/tx_count if tx_count>0 else 0:,.0f})"
+    
     def fake_commerce(self):
         bots = [u for u, d in self.users.items() if d['type'] == 'bot' and d['state'] == 'active']
         if len(bots) < 2: return "Failed"
@@ -296,42 +362,107 @@ class FraudEnvironment:
                 total += amt
         return f"Commerce ${total:,.2f}"
 
-    def cash_out(self):
+    # def cash_out(self):
         """
         Cash out layered funds to clean account
         
-        CRITICAL: Only allows cash out if funds have been properly layered!
-        Prevents direct smurf → cash out (instant detection)
+        CRITICAL: Only cashes out bots where ALL smurfed funds have been layered!
+        - Tracks per-bot: received (from smurf) vs sent (during layering)
+        - Only cashes out if: bot_sent >= bot_received
+        - Prevents direct smurf → cash out (instant detection)
         """
         if self.users[self.clean_id]['state'] == 'banned': 
             return "Failed: Clean banned."
         
-        # CHECK: Has enough layering happened?
-        unlayered = self.total_smurfed - self.total_layered
+        # NEW LOGIC: Only cash out FULLY LAYERED bots
+        # A bot is "clean" if it sent >= what it received from smurfing
+        clean_bots = []
         
-        if unlayered > 5000:  # More than $5k unlayered
-            unlayered_pct = (unlayered / self.total_smurfed * 100) if self.total_smurfed > 0 else 0
-            return (f"Failed: ${unlayered:,.0f} ({unlayered_pct:.0f}%) still unlayered! "
-                   f"Need more mix_chain. (Smurfed: ${self.total_smurfed:,.0f}, "
-                   f"Layered: ${self.total_layered:,.0f})")
+        for u, d in self.users.items():
+            if d['type'] != 'bot' or d['state'] != 'active' or d['balance'] <= 700:
+                continue
+            
+            received = self.bot_received.get(u, 0.0)
+            sent = self.bot_sent.get(u, 0.0)
+            
+            # Bot is clean if it layered all its smurfed funds
+            # (Or if it never received smurf funds - shouldn't happen but safe)
+            if received == 0 or sent >= received:
+                clean_bots.append(u)
         
-        # Proceed with cash out
-        bots = [u for u, d in self.users.items() 
-                if d['type']=='bot' and d['state']=='active' and d['balance']>700]
+        if not clean_bots:
+            # Calculate how many bots need more layering
+            dirty_bots = [u for u, d in self.users.items() 
+                         if d['type'] == 'bot' and d['state'] == 'active' 
+                         and self.bot_received.get(u, 0) > 0
+                         and self.bot_sent.get(u, 0) < self.bot_received.get(u, 0)]
+            
+            if dirty_bots:
+                # Show example of unlayered bot
+                bot = dirty_bots[0]
+                received = self.bot_received[bot]
+                sent = self.bot_sent[bot]
+                unlayered = received - sent
+                pct = (unlayered / received * 100) if received > 0 else 0
+                
+                return (f"Failed: No fully layered bots! Example: bot {bot[:4]} "
+                       f"received ${received:,.0f}, only sent ${sent:,.0f} "
+                       f"({pct:.0f}% unlayered). Need more mix_chain!")
+            else:
+                return "Failed: No bots with sufficient funds (>$700)"
         
-        if not bots:
-            return "Failed: No bots with sufficient funds (>$700)"
-        
+        # Proceed with cash out from clean bots only
         total = 0
-        for bot in bots:
+        for bot in clean_bots:
             bal = self.users[bot]['balance']
             self.users[bot]['balance'] = 0
             self.users[self.clean_id]['balance'] += bal
             self.log_transaction(bot, self.clean_id, bal, "CASHOUT")
             total += bal
         
+        return f"Cleaned ${total:,.2f} ({len(clean_bots)} fully layered bots)"
         return f"Cleaned ${total:,.2f}"
-
+    
+    def cash_out(self):
+        """
+        Derby Cash Out: Withdraws only 'cycled' funds (returned via mix_chain).
+        Allows partial withdrawals to keep the game moving.
+        """
+        if self.users[self.clean_id]['state'] == 'banned': 
+            return "Failed: Clean banned."
+        
+        # Find bots that have cycled funds available
+        ready_bots = []
+        for u, d in self.users.items():
+            if d['type'] != 'bot' or d['state'] != 'active': continue
+            
+            # The Limit is what came back from the Ring
+            clean_limit = self.bot_received_mix[u]
+            
+            # We can only cash out what we actually have, capped by the clean limit
+            amount_to_clean = min(d['balance'], clean_limit)
+            
+            if amount_to_clean > 500:
+                ready_bots.append((u, amount_to_clean))
+        
+        if not ready_bots:
+            return "Failed: No bots with cycled (clean) funds > $500."
+        
+        # Cash out 1-2 bots randomly
+        selected = random.sample(ready_bots, min(len(ready_bots), 2))
+        
+        total = 0
+        for bot_id, amt in selected:
+            # DEDUCT from limit so we don't wash the same credit twice
+            self.bot_received_mix[bot_id] -= amt
+            
+            self.users[bot_id]['balance'] -= amt
+            self.users[self.clean_id]['balance'] += amt
+            self.log_transaction(bot_id, self.clean_id, amt, "CASHOUT")
+            total += amt
+        
+        return f"Cleaned ${total:,.2f} from {len(selected)} cycled bots"
+    
     def generate_background_noise(self):
         """
         Generate realistic civilian transactions using appropriate distributions

@@ -1,4 +1,3 @@
-
 import numpy as np
 import redis
 from ripser import ripser
@@ -135,7 +134,7 @@ class Governor:
                 cycle_indices = cocycles[i]
                 involved_users = list(set([unique_users[indx] for sublist in cycle_indices for indx in sublist[:2] if indx < N]))
                 total_cycle_volume = sum([user_volumes[u] for u in involved_users])
-                min_volume = len(involved_users) * 3000
+                min_volume = len(involved_users) * 3500  # Increased from 3000 to reduce FPs
 
                 if total_cycle_volume < min_volume:
                     continue
@@ -145,12 +144,16 @@ class Governor:
                      and d['receiver_id'] in involved_users]
         
                 if cycle_txs:
+                    # Require minimum transaction count (fraud cycles have many txs)
+                    if len(cycle_txs) < 5:
+                        continue
+                    
                     amounts = [float(d['amount']) for d in cycle_txs]
                     avg_amount = sum(amounts) / len(amounts)
                     std_dev = (sum((x - avg_amount)**2 for x in amounts) / len(amounts)) ** 0.5
                     cv = std_dev / avg_amount if avg_amount > 0 else 0
             
-                    if cv > 0.5:
+                    if cv > 0.3:  # Tightened from 0.5 (fraud patterns are consistent)
                         continue
 
                 suspicious_cases.append({
