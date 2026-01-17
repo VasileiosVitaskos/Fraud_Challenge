@@ -5,7 +5,11 @@ import logging
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
-
+try:
+    from graph_visualizer import TransactionGraphVisualizer
+    VISUALIZER_AVAILABLE = True
+except ImportError:
+    VISUALIZER_AVAILABLE = False
 # --- OPTIMIZATION 1: SILENCE LOGS ---
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -298,15 +302,23 @@ def play_game():
     START_EQ = 150000.0 
     last_model = "-"
     
+    # ========== VISUALIZATION SETTINGS ==========
+    SNAPSHOT_INTERVAL = 5  # Generate graph every N turns
+    # ============================================
+    
     # Track smurfed bots for layering requirement
     bots_need_layering = set()
     last_ban_turn = 0
 
     for turn in range(1, MAX_TURNS + 1):
         # ========== GOVERNOR PRIORITY: Check FIRST ===========
-        # Simulate realistic banking: fraud detection has first priority
         sim.generate_background_noise()
         sim.check_for_bans()
+        
+        # ========== GENERATE VISUALIZATION SNAPSHOT ==========
+        if turn % SNAPSHOT_INTERVAL == 0:
+            generate_visualization(turn_number=turn)
+        # =====================================================
         
         # AI Decision Data
         bots = [d for d in sim.users.values() if d["type"] == "bot" and d["state"] == "active"]
@@ -382,7 +394,6 @@ DECIDE YOUR NEXT MOVE:
             
             # Track smurfed bots for layering requirement (BEFORE execution)
             if tool == "smurf_split":
-                # After smurfing, mark these bots as needing layering
                 smurfed_bots = [u for u, d in sim.users.items() 
                                if d['type'] == 'bot' and d['state'] == 'active' and d['balance'] > 0]
                 bots_need_layering.update(smurfed_bots)
@@ -391,19 +402,13 @@ DECIDE YOUR NEXT MOVE:
             res_msg = sim.execute_instruction(decision)
             
             # THEN check results (AFTER execution)
-            # THEN check results (AFTER execution)
             if tool == "mix_chain":
-                # Check which bots are now fully layered (Clean Candidates)
-                # NEW DERBY LOGIC: Bot is ready if it received 'mix' funds back
                 for bot_id in list(bots_need_layering):
-                    # Ελέγχουμε αν έχει επιστρέψει καθαρό χρήμα (πάνω από $1000 για να αξίζει)
                     clean_available = sim.bot_received_mix.get(bot_id, 0.0)
-                    
                     if clean_available > 1000: 
                         bots_need_layering.discard(bot_id)
             
             elif tool == "cash_out":
-                # After cash out, remove cashed bots from layering requirement
                 cashed_bots = [u for u, d in sim.users.items() 
                               if d['type'] == 'bot' and d['state'] == 'active' and d['balance'] < 100]
                 for bot in cashed_bots:
@@ -426,7 +431,6 @@ DECIDE YOUR NEXT MOVE:
             left = START_EQ - cln - frz
             dirty_left = sim.users[sim.dirty_id]['balance']
             
-            # Show both total frozen (incl FPs) and bot-only frozen
             if sim.false_positives > 0:
                 print(f"📊 SCORE:       🔴 Clean: ${cln:,.0f}  |  🔵 Frozen: ${frz:,.0f} (${frz_bots:,.0f} from bots)  |  ⚫ Left: ${left:,.0f}")
             else:
@@ -437,55 +441,127 @@ DECIDE YOUR NEXT MOVE:
         # ========== ENHANCED WIN CONDITIONS ==========
         
         cln = sim.users[sim.clean_id]['balance']
-        frz = sim.frozen_assets  # Total frozen (including FPs)
-        frz_bots = sim.frozen_from_bots  # NEW: Only bot assets (for win condition)
+        frz = sim.frozen_assets
+        frz_bots = sim.frozen_from_bots
         left = START_EQ - cln - frz
         
-        # NEW: Blue Team Perfect Win (90% of bots eliminated)
         banned_bots = sum(1 for u, d in sim.users.items() 
                          if d['type'] == 'bot' and d['state'] == 'banned')
         bot_elimination_rate = banned_bots / sim.total_bots if sim.total_bots > 0 else 0
         
+        # Blue Team Perfect Win
         if bot_elimination_rate >= 0.9:
             print(f"\n👮 🎯 BLUE TEAM PERFECT WIN!")
             print(f"Bot Network Destroyed: {banned_bots}/{sim.total_bots} bots eliminated ({bot_elimination_rate*100:.0f}%)")
             print_final_report(START_EQ)
+            generate_visualization(final=True)  # ← FINAL VISUALIZATION
             break
         
-        # NEW: Blue Team Catastrophic Failure (Too many False Positives)
+        # Blue Team Disqualified
         if sim.false_positives >= 10:
             print(f"\n🚫 💥 BLUE TEAM DISQUALIFIED!")
             print(f"REASON: {sim.false_positives} False Positives (limit: 10)")
             print("Too many innocent users banned. Governor system shut down for review.")
             print("\n🎉 RED TEAM WINS BY DEFAULT!")
             print_final_report(START_EQ)
+            generate_visualization(final=True)  # ← FINAL VISUALIZATION
             break
         
-        # ORIGINAL: Red Team Wins (Cleaned $75k)
+        # Red Team Wins
         if cln >= 75000:
             print("\n🎉 RED TEAM WINS!")
             print(f"Successfully laundered ${cln:,.0f}")
             print_final_report(START_EQ)
+            generate_visualization(final=True)  # ← FINAL VISUALIZATION
             break
         
-        # FIXED: Blue Team Wins (Frozen $75k from BOTS only!)
+        # Blue Team Wins
         if frz_bots >= 75000:
             print("\n👮 BLUE TEAM WINS!")
             print(f"Successfully froze ${frz_bots:,.0f} in fraud assets (from bots)")
             print(f"Total frozen (including {sim.false_positives} FPs): ${frz:,.0f}")
             print_final_report(START_EQ)
+            generate_visualization(final=True)  # ← FINAL VISUALIZATION
             break
         
-        # ORIGINAL: Bankrupt (Ran out of money)
+        # Bankrupt
         if left < 5000 and cln < 75000:
             print("\n💀 GAME OVER (Bankrupt)")
             print(f"Remaining funds: ${left:,.0f} (too low to continue)")
             print_final_report(START_EQ)
+            generate_visualization(final=True)  # ← FINAL VISUALIZATION
             break
         
         # ========== END WIN CONDITIONS ==========
         
         time.sleep(Config.TICK_DURATION)
+    
+    # If loop completes without break (max turns reached)
+    else:
+        print("\n⏰ TIME'S UP! Maximum turns reached.")
+        print_final_report(START_EQ)
+        generate_visualization(final=True)  # ← FINAL VISUALIZATION
+
+
+def generate_visualization(turn_number=None, final=False):
+    """
+    Generate visualization snapshot.
+    
+    Args:
+        turn_number: Current turn (for filename), None for final
+        final: If True, this is the final visualization
+    """
+    if not VISUALIZER_AVAILABLE:
+        return
+    
+    try:
+        # Use non-interactive backend (no popup windows)
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        
+        viz = TransactionGraphVisualizer()
+        
+        if not viz.load_from_stream():
+            return
+        
+        viz.load_identity_map()
+        viz.load_banned_nodes()
+        viz.load_fraud_alerts()
+        
+        # Create output folder for snapshots
+        output_dir = "graph_snapshots"
+        os.makedirs(output_dir, exist_ok=True)
+        
+        if final:
+            # Final visualization
+            png_path = "transaction_graph_final.png"
+            html_path = "transaction_graph_final.html"
+            print(f"\n📊 Generating FINAL visualization...")
+        else:
+            # Turn snapshot
+            png_path = f"{output_dir}/graph_turn_{turn_number:03d}.png"
+            html_path = None  # Only save HTML for final
+            print(f"📸 Snapshot saved: Turn {turn_number}")
+        
+        # Generate PNG
+        viz.visualize(
+            layout='spring',
+            show_labels=True,
+            highlight_fraud=True,
+            save_path=png_path
+        )
+        plt.close('all')
+        
+        # Generate HTML only for final
+        if html_path:
+            viz.visualize_html(html_path)
+            print(f"   📄 {png_path}")
+            print(f"   🌐 {html_path}")
+            
+    except Exception as e:
+        print(f"⚠️  Visualization error: {e}")
+
 
 if __name__ == "__main__":
     play_game()
