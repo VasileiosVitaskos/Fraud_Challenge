@@ -6,5 +6,4 @@ scipy
 ripser
 cython
 networkx
-matplotlib
 plotly

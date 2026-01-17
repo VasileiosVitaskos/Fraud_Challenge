@@ -12,7 +12,7 @@ services:
     depends_on:
       - redis-broker
     env_file:
-      - .env.docker
+      - .env
     environment:
       - REDIS_HOST=redis-broker
       - REDIS_PORT=6379

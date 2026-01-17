@@ -303,7 +303,7 @@ def play_game():
     last_model = "-"
     
     # ========== VISUALIZATION SETTINGS ==========
-    SNAPSHOT_INTERVAL = 5  # Generate graph every N turns
+    SNAPSHOT_INTERVAL = 3  # Generate graph every N turns
     # ============================================
     
     # Track smurfed bots for layering requirement
@@ -504,22 +504,10 @@ DECIDE YOUR NEXT MOVE:
 
 
 def generate_visualization(turn_number=None, final=False):
-    """
-    Generate visualization snapshot.
-    
-    Args:
-        turn_number: Current turn (for filename), None for final
-        final: If True, this is the final visualization
-    """
     if not VISUALIZER_AVAILABLE:
         return
     
     try:
-        # Use non-interactive backend (no popup windows)
-        import matplotlib
-        matplotlib.use('Agg')
-        import matplotlib.pyplot as plt
-        
         viz = TransactionGraphVisualizer()
         
         if not viz.load_from_stream():
@@ -529,39 +517,21 @@ def generate_visualization(turn_number=None, final=False):
         viz.load_banned_nodes()
         viz.load_fraud_alerts()
         
-        # Create output folder for snapshots
         output_dir = "graph_snapshots"
         os.makedirs(output_dir, exist_ok=True)
         
         if final:
-            # Final visualization
-            png_path = "transaction_graph_final.png"
-            html_path = "transaction_graph_final.html"
+            html_path = f"{output_dir}/transaction_graph_final.html"
             print(f"\n📊 Generating FINAL visualization...")
-        else:
-            # Turn snapshot
-            png_path = f"{output_dir}/graph_turn_{turn_number:03d}.png"
-            html_path = None  # Only save HTML for final
-            print(f"📸 Snapshot saved: Turn {turn_number}")
-        
-        # Generate PNG
-        viz.visualize(
-            layout='spring',
-            show_labels=True,
-            highlight_fraud=True,
-            save_path=png_path
-        )
-        plt.close('all')
-        
-        # Generate HTML only for final
-        if html_path:
-            viz.visualize_html(html_path)
-            print(f"   📄 {png_path}")
+            viz.visualize_html(html_path, turn_number=None)
             print(f"   🌐 {html_path}")
+        else:
+            html_path = f"{output_dir}/graph_turn_{turn_number:03d}.html"
+            viz.visualize_html(html_path, turn_number=turn_number)
+            print(f"📸 Snapshot: {html_path}")
             
     except Exception as e:
         print(f"⚠️  Visualization error: {e}")
-
 
 if __name__ == "__main__":
     play_game()
