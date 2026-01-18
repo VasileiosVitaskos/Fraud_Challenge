@@ -1,15 +1,3 @@
-"""
-Transaction Graph Visualizer for Fraud Simulation
-==================================================
-Visualizes the transaction network from Redis stream data.
-
-Place this file in your project root (same level as audit.py)
-
-Usage:
-    python graph_visualizer.py                    # Display on screen
-    python graph_visualizer.py --output html      # Interactive HTML
-"""
-
 import os
 import sys
 import json
@@ -320,7 +308,6 @@ class TransactionGraphVisualizer:
         return traces
     
     def visualize_html(self, output_path='transaction_graph.html'):
-        """Create interactive HTML visualization."""
         if not PLOTLY_AVAILABLE:
             print("❌ Plotly not installed. Run: pip install plotly")
             return None
@@ -368,7 +355,7 @@ class TransactionGraphVisualizer:
         fig = go.Figure(
             data=all_traces,
             layout=go.Layout(
-                title='Transaction Network (Interactive)',
+                title='Transaction Network Graph',
                 showlegend=True, hovermode='closest',
                 legend=dict(
                     x=1.02,
