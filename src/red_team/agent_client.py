@@ -286,6 +286,15 @@ def print_final_report(start_equity):
 def play_game():
     print("🧹 Resetting Redis...") 
     reset_simulation_data(get_redis_client()) 
+
+    # CRITICAL: Clear transaction stream to avoid reading old game data
+    redis_client = get_redis_client()
+    try:
+      redis_client.delete('money_flow')
+      print("   ✓ Cleared transaction stream")
+    except Exception as e:
+      print(f"   ⚠️  Could not clear stream: {e}")
+
     print("✨ STARTING STRATEGIC SIMULATION!")
     print("📊 ENHANCED WIN CONDITIONS:")
     print("   - Red Team: Clean $75k OR survive 200 rounds")
@@ -523,11 +532,11 @@ def generate_visualization(turn_number=None, final=False):
         if final:
             html_path = f"{output_dir}/transaction_graph_final.html"
             print(f"\n📊 Generating FINAL visualization...")
-            viz.visualize_html(html_path, turn_number=None)
+            viz.visualize_html(html_path)
             print(f"   🌐 {html_path}")
         else:
             html_path = f"{output_dir}/graph_turn_{turn_number:03d}.html"
-            viz.visualize_html(html_path, turn_number=turn_number)
+            viz.visualize_html(html_path)
             print(f"📸 Snapshot: {html_path}")
             
     except Exception as e:
