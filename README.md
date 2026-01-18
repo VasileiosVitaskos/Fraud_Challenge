@@ -28,6 +28,7 @@ This project is designed for **research, experimentation, and fun** around:
 │     └─ fraud_sim.py
 ├─ Dockerfile             # 🐳 Containerized runtime
 ├─ docker-compose.yml     # 🧩 Redis + Simulator
+├─ graph_visualizer.py    # 📊 Transaction Network Visualization
 ├─ requirements.txt
 └─ README.md
 ```
