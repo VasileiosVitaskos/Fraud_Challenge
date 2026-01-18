@@ -1,7 +1,8 @@
 version: '3.8'
 services:
   redis-broker:       
-    image: redis:alpine
+    image: redis:7
+    container_name: redis-broker
     ports:
       - "6379:6379"
 
